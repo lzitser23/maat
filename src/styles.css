@@ -1,0 +1,548 @@
+@import "tailwindcss";
+
+/* Maat design system — Bricolage Grotesque (display/wordmark), Hanken Grotesk (text/UI), JetBrains Mono (labels/metadata) */
+@theme {
+  --font-sans: "Hanken Grotesk Variable", "Hanken Grotesk", ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --font-display: "Bricolage Grotesque Variable", "Bricolage Grotesque", "Hanken Grotesk Variable",
+    ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Warm-neutral grayscale + a single near-black ink. Light = white surfaces; dark inverts to warm charcoal. */
+:root {
+  color-scheme: light;
+  --app-radius: 0;
+  --window-inset: 0;
+  --app-bg: #ffffff;
+  --fg: #1b1b18;
+  --muted: #666660;
+  --chrome: #fafaf9;
+  --sidebar: #fbfbfa;
+  --inspector: #fbfbfa;
+  --canvas-bg: #f5f5f3;
+  --panel: rgba(255, 255, 255, 0.72);
+  --panel-strong: #ffffff;
+  --panel-hover: #efefeb;
+  --floating: rgba(255, 255, 255, 0.9);
+  --asset: transparent;
+  --asset-media: #f1f1ee;
+  --asset-footer: transparent;
+  --line: #e5e5e1;
+  --line-strong: #d6d6d1;
+  --focus: #8a8a82;
+  --focus-soft: rgba(27, 27, 24, 0.1);
+  --active: #e6e6e1;
+  --active-fg: #1b1b18;
+  --button: #1b1b18;
+  --button-fg: #ffffff;
+  --button-hover: #000000;
+  --button-border: #1b1b18;
+  --drop: rgba(27, 27, 24, 0.06);
+  --shadow-card: 0 4px 12px -4px rgba(27, 27, 24, 0.12), 0 1px 2px rgba(27, 27, 24, 0.05);
+  --shadow-soft: 0 14px 30px -12px rgba(27, 27, 24, 0.22);
+}
+
+.dark {
+  color-scheme: dark;
+  --app-bg: #17171a;
+  --fg: #f4f4f1;
+  --muted: #a0a099;
+  --chrome: #1f1f22;
+  --sidebar: #1b1b1e;
+  --inspector: #1b1b1e;
+  --canvas-bg: #111113;
+  --panel: rgba(31, 31, 34, 0.72);
+  --panel-strong: #1f1f22;
+  --panel-hover: #26262a;
+  --floating: rgba(31, 31, 34, 0.9);
+  --asset: rgba(31, 31, 34, 0.9);
+  --asset-media: #26262a;
+  --asset-footer: rgba(17, 17, 19, 0.88);
+  --line: #2e2e32;
+  --line-strong: #3a3a3e;
+  --focus: #a0a099;
+  --focus-soft: rgba(244, 244, 241, 0.12);
+  --active: #303035;
+  --active-fg: #f4f4f1;
+  --button: #f4f4f1;
+  --button-fg: #17171a;
+  --button-hover: #ffffff;
+  --button-border: #f4f4f1;
+  --drop: rgba(244, 244, 241, 0.06);
+  --shadow-card: 0 4px 14px -4px rgba(0, 0, 0, 0.5), 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-soft: 0 18px 40px -14px rgba(0, 0, 0, 0.6);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  background: var(--app-bg);
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--app-bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.app-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  margin: var(--window-inset);
+  border: 0;
+  border-radius: var(--app-radius);
+  box-shadow: none;
+  background-clip: padding-box;
+  isolation: isolate;
+}
+
+.app-grid {
+  transition:
+    grid-template-columns 180ms ease,
+    grid-template-rows 180ms ease;
+}
+
+.view-mode-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--floating);
+  box-shadow: var(--shadow-soft);
+}
+
+.view-mode-pill__segment {
+  display: inline-flex;
+  height: 1.75rem;
+  align-items: center;
+  justify-content: center;
+  padding-inline: 0.875rem;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+.view-mode-pill__segment:hover {
+  color: var(--fg);
+}
+
+.view-mode-pill__segment[data-active="true"] {
+  background: var(--active);
+  color: var(--active-fg);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.maat-button {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: 1px solid transparent;
+  border-radius: 0.625rem;
+  color: var(--fg);
+  background: transparent;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1;
+  outline: none;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease,
+    opacity 140ms ease;
+}
+
+.maat-button:focus-visible {
+  box-shadow: 0 0 0 2px var(--focus);
+}
+
+.maat-button:disabled {
+  pointer-events: none;
+  opacity: 0.45;
+}
+
+.maat-button--default {
+  border-color: var(--button-border);
+  background: var(--button);
+  color: var(--button-fg);
+}
+
+.maat-button--default:hover {
+  background: var(--button-hover);
+}
+
+.maat-button--secondary {
+  border-color: var(--line);
+  background: var(--panel-strong);
+  color: var(--fg);
+}
+
+.maat-button--secondary:hover,
+.maat-button--ghost:hover {
+  border-color: var(--line);
+  background: var(--panel-hover);
+}
+
+.maat-button--danger {
+  border-color: var(--line-strong);
+  background: var(--panel);
+  color: var(--fg);
+}
+
+.dark .maat-button--danger {
+  color: var(--fg);
+}
+
+.maat-button--danger:hover {
+  background: var(--panel-hover);
+}
+
+.maat-button--sm {
+  height: 2rem;
+  padding-inline: 0.625rem;
+  border-radius: 0.5rem;
+}
+
+.maat-button--md {
+  height: 2.25rem;
+  padding-inline: 0.75rem;
+}
+
+.maat-button--icon {
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+}
+
+.window-controls {
+  display: flex;
+  flex: 0 0 auto;
+}
+
+.window-controls--mac {
+  gap: 0.375rem;
+}
+
+.window-controls--windows {
+  height: 3rem;
+  margin-right: -0.75rem;
+  margin-left: 0.25rem;
+}
+
+.window-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: default;
+}
+
+.window-control--mac {
+  width: 0.75rem;
+  height: 0.75rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--panel);
+}
+
+.window-control--mac.window-control--close {
+  background: var(--fg);
+}
+
+.window-control--mac.window-control--minimize {
+  background: color-mix(in srgb, var(--fg) 62%, var(--app-bg));
+}
+
+.window-control--mac.window-control--maximize {
+  background: color-mix(in srgb, var(--fg) 28%, var(--app-bg));
+}
+
+.window-control--windows {
+  width: 2.875rem;
+  height: 3rem;
+  border-radius: 0;
+}
+
+.window-control--windows:hover {
+  background: var(--panel-hover);
+  color: var(--fg);
+}
+
+.window-control--windows.window-control--close:hover {
+  background: #e81123;
+  color: #ffffff;
+}
+
+.vertical-zoom {
+  width: 1.5rem;
+  height: 5.75rem;
+  writing-mode: vertical-lr;
+  direction: rtl;
+}
+
+.canvas-grid {
+  background: var(--canvas-bg);
+}
+
+.grid-view {
+  position: relative;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: var(--canvas-bg);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 45%, transparent);
+  background-clip: content-box;
+}
+
+.excalidraw-shell {
+  pointer-events: none;
+  transition: opacity 160ms ease;
+}
+
+.excalidraw-shell[data-drawing="true"] {
+  pointer-events: auto;
+}
+
+/* While a node is spotlighted, hide the drawing so the focused image reads clean (not covered by sketches). */
+.excalidraw-shell[data-spotlight="true"] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.excalidraw-shell .excalidraw {
+  background: transparent !important;
+  color: var(--fg);
+}
+
+.excalidraw-shell canvas {
+  background: transparent !important;
+}
+
+.excalidraw-shell:not([data-drawing="true"]) .App-menu_top,
+.excalidraw-shell:not([data-drawing="true"]) .layer-ui__wrapper,
+.excalidraw-shell:not([data-drawing="true"]) .FixedSideContainer,
+.excalidraw-shell:not([data-drawing="true"]) footer {
+  display: none !important;
+}
+
+/* Group frames — labeled containers the asset cards sit inside. */
+.board-frame {
+  position: absolute;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  pointer-events: none;
+}
+
+.frame-chrome {
+  position: absolute;
+  pointer-events: none;
+}
+
+.frame-header {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  max-width: calc(100% - 16px);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel-strong);
+  box-shadow: var(--shadow-card);
+  color: var(--fg);
+  font: 600 12px/1.2 var(--font-sans);
+  pointer-events: auto;
+  cursor: grab;
+  user-select: none;
+}
+
+.frame-header:active {
+  cursor: grabbing;
+}
+
+.frame-header__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.frame-header__input {
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  width: 12ch;
+}
+
+.frame-header__delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.frame-header__delete:hover {
+  background: var(--panel-hover);
+  color: var(--fg);
+}
+
+.frame-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: var(--panel-strong);
+  box-shadow: var(--shadow-card);
+  pointer-events: auto;
+}
+
+.frame-handle--nw {
+  top: -6px;
+  left: -6px;
+  cursor: nwse-resize;
+}
+
+.frame-handle--ne {
+  top: -6px;
+  right: -6px;
+  cursor: nesw-resize;
+}
+
+.frame-handle--sw {
+  bottom: -6px;
+  left: -6px;
+  cursor: nesw-resize;
+}
+
+.frame-handle--se {
+  bottom: -6px;
+  right: -6px;
+  cursor: nwse-resize;
+}
+
+.asset-card {
+  color: var(--fg);
+  padding: 2px;
+  will-change: transform, opacity;
+}
+
+.asset-card.asset-card {
+  transition:
+    transform 220ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 180ms ease,
+    border-color 140ms ease;
+}
+
+.asset-card[data-spotlight="dimmed"] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.asset-card[data-spotlight="focused"] {
+  padding: 0;
+  border-color: transparent;
+  opacity: 1;
+}
+
+.asset-card__media {
+  border-radius: 0.6875rem;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.asset-card:hover .asset-card__media {
+  box-shadow:
+    inset 0 0 0 1px var(--line-strong),
+    var(--shadow-card);
+}
+
+.asset-card[data-selected="true"] .asset-card__media {
+  box-shadow:
+    0 0 0 2px var(--focus-soft),
+    inset 0 0 0 1px var(--focus);
+}
+
+.asset-card[data-selected="true"] {
+  border-color: var(--focus);
+}
+
+.asset-card[data-spotlight="focused"][data-selected="true"] {
+  border-color: transparent;
+}
+
+.asset-card[data-spotlight="focused"] .asset-card__media,
+.asset-card[data-spotlight="focused"]:hover .asset-card__media,
+.asset-card[data-spotlight="focused"][data-selected="true"] .asset-card__media {
+  border-radius: 0.875rem;
+  box-shadow: none;
+}
+
+.asset-card[data-spotlight="focused"] .asset-card__footer {
+  display: none;
+}
+
+.asset-card__inspect {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  z-index: 3;
+  display: inline-flex;
+  width: 2.25rem;
+  height: 2.25rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--fg);
+  background: var(--floating);
+  box-shadow: var(--shadow-soft);
+  transform-origin: top right;
+}
+
+.asset-card__inspect:hover {
+  background: var(--panel-strong);
+}

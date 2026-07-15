@@ -1,0 +1,121 @@
+name: Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  web-check:
+    name: Web checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+
+  windows:
+    name: Windows package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: pnpm install --frozen-lockfile
+      # Pinned exact version, not floating latest -- CI must be
+      # deterministic. vercel-labs/native#72 (published npm package omitting
+      # assets/, incl. assets/native-sdk.manifest, the Win32 app manifest
+      # the Windows build graph needs) was fixed upstream in 0.4.1; 0.4.3 is
+      # the latest verified-working version as of this pin.
+      - run: npm install -g @native-sdk/cli@0.4.3
+      - run: zig build test
+      - run: pnpm run native:package
+      # Packaged smoke test (issue #9): launches the actual packaged
+      # zig-out/package/**/bin/maat-native.exe (scripts/packaged-smoke.mjs)
+      # -- not just confirming `native package` exited 0 -- and fails the
+      # build on a blank WebView, a missing WebView2 loader, missing
+      # frontend assets, or a broken native-bridge round-trip. Runs on
+      # GitHub-hosted windows-latest deliberately: unlike ubuntu-latest (no
+      # WebView2 at all, even under a virtual display) or a headless
+      # container, windows-latest gives every job an interactive desktop
+      # session, and WebView2 Runtime ships preinstalled on the image --
+      # both are required for WebView2 to actually attach a browser process
+      # here (see the smoke script's CDP-based assertions). This step must
+      # run after packaging and before upload, and must not rebuild the
+      # package, so the artifact uploaded below is the exact one the smoke
+      # test exercised. Cleans up the app process and %APPDATA%\MaatNative /
+      # %LOCALAPPDATA%\com.lzitser.maat-native on both pass and fail, so a
+      # failed run doesn't poison the runner for anything after it.
+      #
+      # Fallback if GitHub-hosted windows-latest ever stops reliably
+      # providing a usable desktop session or preinstalled WebView2: switch
+      # `runs-on: windows-latest` above to a self-hosted Windows runner
+      # (`runs-on: [self-hosted, windows]`) registered to this repo. No
+      # other change to this job is required -- the smoke script only
+      # depends on a real Windows desktop + WebView2 Runtime, not anything
+      # GitHub-hosted-specific.
+      - run: pnpm run smoke:packaged
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Maat-Native-windows
+          path: zig-out/package
+
+  macos:
+    name: macOS package
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: pnpm install --frozen-lockfile
+      # Pinned exact version -- see the matching comment on the windows job.
+      - run: npm install -g @native-sdk/cli@0.4.3
+      # The correctness gate for this job: src-zig's macOS socket layer
+      # (server.zig), window/reveal-path platform gates (main.zig), and
+      # build.zig's macOS link step all have to actually compile and pass
+      # under `zig build test` on a real macOS host -- nothing here is
+      # cross-compiled from Windows.
+      - run: zig build test
+      - run: pnpm run native:package:macos
+      # No packaged smoke test on macOS (unlike the windows job's
+      # smoke:packaged): that script drives the app over WebView2's CDP
+      # endpoint, which is WebView2-specific -- WKWebView (the macOS system
+      # web engine) doesn't speak CDP, and there is no equivalent
+      # automation hook for it in @native-sdk/cli 0.4.3. `native:package:macos`
+      # (scripts/package-fixup.mjs's verifyMacos) still fails the build if
+      # the packaged .app bundle is incomplete -- missing binary,
+      # Contents/Info.plist, icon, or frontend assets under
+      # Contents/Resources/dist -- so a broken bundle still fails this job,
+      # just without launching it.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Maat-Native-macos
+          path: zig-out/package

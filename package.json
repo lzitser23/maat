@@ -1,0 +1,52 @@
+{
+  "name": "maat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1421",
+    "build": "tsc && vite build && pnpm run check:bundle",
+    "preview": "vite preview --host 127.0.0.1 --port 1421",
+    "lint": "tsc --noEmit",
+    "test:e2e": "playwright test",
+    "check:bundle": "node scripts/check-bundle-size.mjs",
+    "native:dev": "native dev --yes",
+    "native:build": "native build --yes",
+    "native:package": "node scripts/package-fixup.mjs windows",
+    "native:package:macos": "node scripts/package-fixup.mjs macos",
+    "test:zig": "zig build test",
+    "smoke:native": "node scripts/native-smoke.mjs",
+    "smoke:packaged": "node scripts/packaged-smoke.mjs"
+  },
+  "dependencies": {
+    "@excalidraw/excalidraw": "0.18.1",
+    "@fontsource-variable/bricolage-grotesque": "^5.2.10",
+    "@fontsource-variable/hanken-grotesk": "^5.2.8",
+    "@fontsource-variable/jetbrains-mono": "^5.2.8",
+    "@tailwindcss/vite": "^4.1.11",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.468.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "tailwind-merge": "^2.6.0",
+    "tailwindcss": "^4.1.11",
+    "zustand": "^5.0.6"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.0"
+  },
+  "packageManager": "pnpm@10.15.0",
+  "pnpm": {
+    "overrides": {
+      "lodash-es": "4.18.1",
+      "@excalidraw/excalidraw>nanoid": "3.3.8",
+      "@excalidraw/mermaid-to-excalidraw>nanoid": "5.0.9"
+    }
+  }
+}

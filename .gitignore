@@ -1,0 +1,36 @@
+node_modules/
+dist/
+
+.zig-cache/
+zig-out/
+.native/
+
+test-results/
+playwright-report/
+
+.maat-vite*.log
+maat-light.png
+maat-dark.png
+maat-screenshot.png
+maat-scope.png
+
+# Local reference clip, not source
+*.mp4
+
+.DS_Store
+Thumbs.db
+
+# Secrets & local config — never ship
+.env
+.env.*
+!.env.example
+*.local
+
+# Editor
+.vscode/
+.idea/
+
+# Claude Code local session state
+.claude/
+
+graphify-out/

@@ -1,0 +1,41 @@
+.{
+    .id = "com.lzitser.maat-native",
+    .name = "maat-native",
+    .display_name = "Maat Native",
+    .version = "0.1.0",
+    .icons = .{ "assets/icon.png" },
+    .platforms = .{ "windows", "macos" },
+    .permissions = .{ "window", "dialog", "filesystem", "clipboard", "network" },
+    .capabilities = .{ "webview", "js_bridge", "dialog", "filesystem", "clipboard", "network", "reveal_path", "file_drops" },
+    .frontend = .{
+        .dist = "dist",
+        .entry = "index.html",
+        .spa_fallback = true,
+        .dev = .{
+            .url = "http://127.0.0.1:1421/",
+            .command = .{ "pnpm", "dev" },
+            .ready_path = "/",
+            .timeout_ms = 30000,
+        },
+    },
+    .security = .{
+        .navigation = .{
+            .allowed_origins = .{ "zero://app", "zero://inline", "http://127.0.0.1:1421", "http://127.0.0.1:1499" },
+            .external_links = .{ .action = "deny" },
+        },
+    },
+    .windows = .{
+        // No `.restore_policy` here: RawWindow (tooling/raw_manifest.zig in
+        // @native-sdk/cli), which backs this legacy `.windows[]` array, has
+        // no such field at all -- only RawShellWindow (the newer
+        // `.shell.windows[]` schema, unused by this app) does. Adding
+        // `.restore_policy` here parses fine through our own build.zig
+        // (its comptime app.zon import is permissive), but breaks the
+        // separate prebuilt `native` CLI's manifest parser outright
+        // (`native dev`/`native build`/`native package` all fail with a
+        // bare "error: ParseZon") -- confirmed upstream schema gap.
+        // Startup centering is done by hand instead; see
+        // `centerMainWindowIfNeeded` in src-zig/runner.zig.
+        .{ .label = "main", .title = "Maat Native", .width = 1440, .height = 940, .titlebar = "chromeless", .restore_state = true },
+    },
+}
