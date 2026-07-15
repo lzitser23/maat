@@ -56,6 +56,7 @@ import {
 import type { ClipboardImportItem } from "./lib/bridge";
 import { confirmDialog } from "./lib/dialog";
 import { arrangeNodes, fitViewport } from "./lib/layout";
+import { queueModelThumbnails } from "./lib/modelThumbs";
 import { filteredAssets, filteredNodes, scopeLabel } from "./lib/scope";
 import { selectedAssets, useAppStore } from "./store";
 import type { HistoryApply } from "./store";
@@ -127,6 +128,7 @@ export default function App() {
     setInspectorOpen,
     viewMode,
     setViewMode,
+    patchAsset,
   } = useAppStore();
 
   const immersive = viewMode === "infinity";
@@ -135,6 +137,12 @@ export default function App() {
     document.documentElement.classList.toggle("dark", theme === "dark");
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  // 3D models import with previewStatus "fallback" (the engine can't rasterize them);
+  // render their thumbnails here in the webview, one at a time, and patch results in.
+  useEffect(() => {
+    if (view) queueModelThumbnails(view.assets, patchAsset);
+  }, [view, patchAsset]);
 
   useEffect(() => {
     viewportRef.current = { scale, offsetX, offsetY };

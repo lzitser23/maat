@@ -959,6 +959,8 @@ const mime_table = [_]MimeEntry{
     .{ .ext = "m4a", .mime = "audio/mp4" },
     .{ .ext = "aac", .mime = "audio/aac" },
     .{ .ext = "pdf", .mime = "application/pdf" },
+    .{ .ext = "glb", .mime = "model/gltf-binary" },
+    .{ .ext = "gltf", .mime = "model/gltf+json" },
 };
 
 /// Approximates `mime_guess::from_path(...).first_or_octet_stream()` for the
@@ -977,6 +979,8 @@ fn classify(mime: []const u8, extension: []const u8) []const u8 {
     if (std.mem.startsWith(u8, mime, "video/")) return "video";
     if (std.mem.startsWith(u8, mime, "audio/")) return "audio";
     if (std.mem.eql(u8, mime, "application/pdf") or std.mem.eql(u8, extension, "pdf")) return "pdf";
+    if (std.mem.startsWith(u8, mime, "model/")) return "model";
+    for ([_][]const u8{ "glb", "gltf" }) |e| if (std.mem.eql(u8, extension, e)) return "model";
     for ([_][]const u8{ "ttf", "otf", "woff", "woff2" }) |e| if (std.mem.eql(u8, extension, e)) return "font";
     for ([_][]const u8{ "fig", "sketch", "psd", "ai", "xd", "afdesign" }) |e| if (std.mem.eql(u8, extension, e)) return "design";
     for ([_][]const u8{ "zip", "rar", "7z", "tar", "gz" }) |e| if (std.mem.eql(u8, extension, e)) return "archive";
@@ -1154,7 +1158,7 @@ const UploadContainmentError = error{UploadPathNotContained};
 /// directory that merely starts with the same characters --
 /// `.uploads_evil` next to `.uploads` -- is correctly rejected rather than
 /// treated as contained.
-fn validateUploadContainment(allocator: std.mem.Allocator, io: std.Io, storage_root: []const u8, upload_path: []const u8) UploadContainmentError!void {
+pub fn validateUploadContainment(allocator: std.mem.Allocator, io: std.Io, storage_root: []const u8, upload_path: []const u8) UploadContainmentError!void {
     const uploads_dir = std.fs.path.join(allocator, &.{ storage_root, ".uploads" }) catch return error.UploadPathNotContained;
     defer allocator.free(uploads_dir);
 

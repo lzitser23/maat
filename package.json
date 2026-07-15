@@ -31,12 +31,14 @@
     "react-dom": "^19.1.0",
     "tailwind-merge": "^2.6.0",
     "tailwindcss": "^4.1.11",
+    "three": "^0.185.1",
     "zustand": "^5.0.6"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
+    "@types/three": "^0.185.1",
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "^5.8.3",
     "vite": "^7.0.0"

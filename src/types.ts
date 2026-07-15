@@ -30,6 +30,7 @@ export type AssetKind =
   | "document"
   | "archive"
   | "design"
+  | "model"
   | "unknown";
 
 export type Asset = {

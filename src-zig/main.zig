@@ -23,13 +23,15 @@ const app_origins = [_][]const u8{
     "http://127.0.0.1:1499",
 };
 
-// 16 domain commands (COMMAND-CONTRACT.md's original 14, ported 1:1 with
+// 17 domain commands (COMMAND-CONTRACT.md's original 14, ported 1:1 with
 // the deliberate delete_board cascade fix from INTERFACE.md item 1, plus
 // `load_board_page` and `list_boards_state` -- issue #4's bounded-response
-// board pagination) onto the Storage/ingest layers, plus 13 shell commands
-// (window chrome, dialogs, the local file server, the import job registry,
-// and `reveal_path`, a pure OS side effect with no storage involvement).
-const domain_handler_count = 16;
+// board pagination, plus `set_asset_thumbnail` -- webview-rendered previews
+// for kinds the engine can't decode, e.g. 3D models) onto the Storage/ingest
+// layers, plus 13 shell commands (window chrome, dialogs, the local file
+// server, the import job registry, and `reveal_path`, a pure OS side effect
+// with no storage involvement).
+const domain_handler_count = 17;
 const shell_handler_count = 13;
 const handler_count = domain_handler_count + shell_handler_count;
 
@@ -342,6 +344,8 @@ const App = struct {
         self.handlers[i] = .{ .name = "delete_frame", .context = self, .invoke_fn = deleteFrame };
         i += 1;
         self.handlers[i] = .{ .name = "update_board_drawing", .context = self, .invoke_fn = updateBoardDrawing };
+        i += 1;
+        self.handlers[i] = .{ .name = "set_asset_thumbnail", .context = self, .invoke_fn = setAssetThumbnail };
         i += 1;
         self.handlers[i] = .{ .name = "reveal_path", .context = self, .invoke_fn = revealPath };
         i += 1;
@@ -656,6 +660,29 @@ fn restoreAssets(context: *anyopaque, invocation: bridge.Invocation, output: []u
 
     storage.restoreAssets(args.boardId, args.assetIds) catch |err| return mapStorageError(err);
     return "null";
+}
+
+fn setAssetThumbnail(context: *anyopaque, invocation: bridge.Invocation, output: []u8) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(context));
+    const storage = try self.storagePtr();
+    const file_server = self.file_server orelse return error.ServerUnavailable;
+
+    var arena = std.heap.ArenaAllocator.init(self.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const Args = struct { boardId: []const u8, assetId: []const u8, uploadPath: []const u8 };
+    const args = try parsePayload(Args, a, invocation.request.payload);
+
+    // Same security boundary as clipboard imports: `uploadPath` is
+    // renderer-supplied JSON, so prove it resolves inside
+    // `<storage_root>/.uploads` before storage renames/deletes anything at
+    // that path.
+    try ingest_mod.validateUploadContainment(a, file_server.io, self.storage_root, args.uploadPath);
+
+    const asset = storage.setAssetThumbnail(a, args.boardId, args.assetId, args.uploadPath) catch |err| return mapStorageError(err);
+    const json = try asset.toJson(a);
+    return copyJsonOrSpill(self, output, json);
 }
 
 fn purgeAssets(context: *anyopaque, invocation: bridge.Invocation, output: []u8) anyerror![]const u8 {

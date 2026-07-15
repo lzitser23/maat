@@ -35,6 +35,9 @@ type AppStore = CanvasState & {
   setInitialState: (boards: Board[], activeBoardId: string, view: BoardView) => void;
   setBoards: (boards: Board[], activeBoardId: string, view: BoardView) => void;
   setView: (view: BoardView) => void;
+  // In-place replace of one asset row (e.g. a model thumbnail arriving) -- leaves nodes,
+  // history, and scope untouched, so it's safe mid-drag.
+  patchAsset: (asset: Asset) => void;
   renameBoard: (board: Board) => void;
   setBoardDrawing: (boardId: string, drawingJson: string) => void;
   upsertNodes: (nodes: BoardNode[]) => void;
@@ -204,6 +207,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
       redoStack: [],
       baseline: snapshotView(view),
     })),
+  patchAsset: (asset) =>
+    set((state) =>
+      state.view && state.view.board.id === asset.boardId
+        ? { view: { ...state.view, assets: state.view.assets.map((existing) => (existing.id === asset.id ? asset : existing)) } }
+        : {},
+    ),
   renameBoard: (board) =>
     set((state) => ({
       boards: state.boards.map((existing) => (existing.id === board.id ? board : existing)),

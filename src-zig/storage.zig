@@ -1516,6 +1516,80 @@ pub const Storage = struct {
         }
     }
 
+    /// Adopts a client-rendered preview image (already written to disk; the caller
+    /// must have proven `upload_path`'s containment BEFORE calling, since this moves
+    /// the file) as this asset's thumbnail: the file is moved into the board's
+    /// `thumbs/` dir as `<hash>.png`, the row flips to preview_status='ready', and
+    /// the updated row is returned. Exists for kinds the engine cannot decode itself
+    /// (3D models are rendered by the webview's WebGL context, not by Zig).
+    pub fn setAssetThumbnail(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        board_id: []const u8,
+        asset_id: []const u8,
+        upload_path: []const u8,
+    ) !Asset {
+        self.mutex.lockUncancelable(self.ioHandle());
+        defer self.mutex.unlock(self.ioHandle());
+        const io = self.ioHandle();
+
+        const board_path = blk: {
+            const stmt = try self.prepareStmt("SELECT path FROM libraries WHERE id = ?1");
+            defer _ = c.sqlite3_finalize(stmt);
+            try bindText(stmt, 1, board_id);
+            if (!try stepRow(stmt)) return error.NotFound;
+            break :blk try columnText(allocator, stmt, 0);
+        };
+        defer allocator.free(board_path);
+
+        const hash = blk: {
+            const stmt = try self.prepareStmt("SELECT hash FROM assets WHERE id = ?1 AND library_id = ?2");
+            defer _ = c.sqlite3_finalize(stmt);
+            try bindText(stmt, 1, asset_id);
+            try bindText(stmt, 2, board_id);
+            if (!try stepRow(stmt)) return error.NotFound;
+            break :blk try columnText(allocator, stmt, 0);
+        };
+        defer allocator.free(hash);
+
+        const thumbs_dir = try std.fs.path.join(allocator, &.{ board_path, "thumbs" });
+        defer allocator.free(thumbs_dir);
+        try std.Io.Dir.cwd().createDirPath(io, thumbs_dir);
+
+        const filename = try std.fmt.allocPrint(allocator, "{s}.png", .{hash});
+        defer allocator.free(filename);
+        const thumb_path = try std.fs.path.join(allocator, &.{ thumbs_dir, filename });
+        defer allocator.free(thumb_path);
+
+        // Windows rename fails on an existing destination, and a stale thumb with
+        // this content-addressed name can survive a purge+reimport cycle.
+        std.Io.Dir.deleteFileAbsolute(io, thumb_path) catch {};
+        try std.Io.Dir.renameAbsolute(upload_path, thumb_path, io);
+
+        {
+            const stmt = try self.prepareStmt(
+                "UPDATE assets SET thumbnail_path = ?1, preview_status = 'ready' WHERE id = ?2 AND library_id = ?3",
+            );
+            defer _ = c.sqlite3_finalize(stmt);
+            try bindText(stmt, 1, thumb_path);
+            try bindText(stmt, 2, asset_id);
+            try bindText(stmt, 3, board_id);
+            _ = try stepDone(stmt);
+        }
+
+        const stmt = try self.prepareStmt(
+            \\SELECT id, library_id, source_id, name, original_path, managed_path, mime, extension, size,
+            \\       hash, width, height, kind, preview_status, thumbnail_path, tags_json, folders_json,
+            \\       note, source_url, trashed_at, created_at, metadata_json
+            \\FROM assets WHERE id = ?1 AND library_id = ?2
+        );
+        defer _ = c.sqlite3_finalize(stmt);
+        try bindText(stmt, 1, asset_id);
+        try bindText(stmt, 2, board_id);
+        if (!try stepRow(stmt)) return error.NotFound;
+        return try assetFromRow(allocator, stmt, 0);
+    }
+
     /// Deletes `board_nodes` + `assets` rows for `asset_ids` on the CURRENT (already
     /// open) transaction, returning the managed + thumbnail file paths to remove
     /// from disk after the caller commits. Shared by `purgeAssets` and `deleteSource`,

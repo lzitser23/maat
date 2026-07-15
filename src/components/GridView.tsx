@@ -1,10 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
-import { Info } from "lucide-react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { Info, Loader2 } from "lucide-react";
 import { assetIcon, assetKindLabel } from "../lib/asset";
-import { assetOriginalUrl, assetPreviewUrl } from "../lib/bridge";
+import { assetModelUrl, assetOriginalUrl, assetPreviewUrl } from "../lib/bridge";
 import { arrangeNodes } from "../lib/layout";
 import { formatBytes } from "../lib/format";
 import type { Asset, BoardNode, BoardView } from "../types";
+
+// Same lazy boundary as Canvas.tsx — three.js only downloads when a model is focused.
+const ModelViewer = lazy(() => import("./ModelViewer"));
 
 type GridViewProps = {
   view: BoardView;
@@ -39,6 +42,7 @@ export function GridView({ view, nodes, selectedIds, focusedNodeId, onSelect, on
     setOriginalLoaded(false);
   }, [focusedOriginalUrl]);
   const focusedDisplayUrl = originalLoaded && focusedOriginalUrl ? focusedOriginalUrl : focusedPreviewUrl;
+  const focusedModelUrl = focusedAsset && focusedAsset.kind === "model" ? assetModelUrl(focusedAsset) : null;
 
   return (
     <div
@@ -74,7 +78,19 @@ export function GridView({ view, nodes, selectedIds, focusedNodeId, onSelect, on
           onClick={() => onClearFocus()}
         >
           <div className="relative flex max-h-full max-w-full items-center justify-center" onClick={(event) => event.stopPropagation()}>
-            {focusedDisplayUrl ? (
+            {focusedModelUrl ? (
+              <div className="h-[80vh] w-[80vw] overflow-hidden rounded-lg">
+                <Suspense
+                  fallback={
+                    <div className="flex h-full w-full items-center justify-center">
+                      <Loader2 className="h-5 w-5 animate-spin text-[var(--muted)]" />
+                    </div>
+                  }
+                >
+                  <ModelViewer src={focusedModelUrl} />
+                </Suspense>
+              </div>
+            ) : focusedDisplayUrl ? (
               <img src={focusedDisplayUrl} alt="" className="max-h-full max-w-full rounded-lg object-contain" draggable={false} />
             ) : (
               <div className="flex h-64 w-64 flex-col items-center justify-center gap-3 rounded-lg border border-[var(--line)] bg-[var(--asset-media)] p-5 text-center">

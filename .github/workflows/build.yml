@@ -1,12 +1,16 @@
 name: Build
 
+# Branch model: PRs land on dev; dev merges to main. Every trigger runs the
+# same checks; the macos job additionally signs + notarizes the .app, but only
+# on a push to main or a v* tag (the promotion that produces a distributable
+# build) -- see the "Sign and notarize" steps below.
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, dev]
     tags: ["v*"]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 jobs:
   web-check:
@@ -83,6 +87,11 @@ jobs:
   macos:
     name: macOS package
     runs-on: macos-latest
+    env:
+      # The `secrets` context is not allowed in step-level `if:` expressions,
+      # so the "are the notarization secrets configured?" check is hoisted
+      # into this job-level env flag and the steps test `env.NOTARIZE`.
+      NOTARIZE: ${{ secrets.APPLE_ID != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -115,7 +124,160 @@ jobs:
       # Contents/Info.plist, icon, or frontend assets under
       # Contents/Resources/dist -- so a broken bundle still fails this job,
       # just without launching it.
+
+      # --- Signing + notarization (push to main / v* tags only) ---
+      #
+      # PR and dev builds stay unsigned (the artifact below is still
+      # uploaded either way). The promotion to main is what produces a
+      # distributable build, so only there do we pay the ~2-5 min
+      # notarization round-trip. Every step is additionally gated on
+      # APPLE_ID being set, so merges to main keep working (unsigned)
+      # until the repo secrets exist.
+      #
+      # Required repo secrets:
+      #   MACOS_CERTIFICATE_P12      base64 of a "Developer ID Application"
+      #                              .p12 export (cert + private key):
+      #                              base64 -i cert.p12 | pbcopy
+      #   MACOS_CERTIFICATE_PASSWORD the .p12's export password
+      #   APPLE_ID                   Apple ID email of the developer account
+      #   APPLE_APP_SPECIFIC_PASSWORD app-specific password for that Apple ID
+      #                              (appleid.apple.com -> Sign-In and
+      #                              Security -> App-Specific Passwords)
+      #   APPLE_TEAM_ID              10-char team id (developer.apple.com ->
+      #                              Membership)
+      - name: Import signing certificate
+        if: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && env.NOTARIZE == 'true' }}
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain-db
+          security set-keychain-settings -lut 21600 build.keychain-db
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain-db
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > /tmp/cert.p12
+          security import /tmp/cert.p12 -k build.keychain-db -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm /tmp/cert.p12
+          # Allow codesign to use the key non-interactively (headless runner).
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain-db
+          security list-keychains -d user -s build.keychain-db login.keychain-db
+
+      - name: Sign, notarize, and staple
+        if: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && env.NOTARIZE == 'true' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          # The packager writes the bundle as the one directory under
+          # zig-out/package with a Contents/Info.plist (see
+          # scripts/package-fixup.mjs findPackageDir).
+          APP=""
+          for dir in zig-out/package/*/; do
+            if [ -f "${dir}Contents/Info.plist" ]; then APP="${dir%/}"; break; fi
+          done
+          if [ -z "$APP" ]; then
+            echo "No .app bundle found under zig-out/package" >&2
+            exit 1
+          fi
+          echo "Signing $APP"
+
+          IDENTITY="Developer ID Application"
+          # Inner Mach-O files first (dylibs the SDK may ship), then the
+          # bundle itself, with hardened runtime -- required by notarization.
+          find "$APP/Contents" -type f \( -name "*.dylib" -o -name "*.so" \) \
+            -exec codesign --force --options runtime --timestamp --sign "$IDENTITY" {} +
+          codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          ditto -c -k --keepParent "$APP" /tmp/notarize.zip
+          xcrun notarytool submit /tmp/notarize.zip \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --output-format json | tee /tmp/notary.json
+          STATUS="$(python3 -c 'import json;print(json.load(open("/tmp/notary.json"))["status"])')"
+          if [ "$STATUS" != "Accepted" ]; then
+            SUBMISSION_ID="$(python3 -c 'import json;print(json.load(open("/tmp/notary.json"))["id"])')"
+            echo "Notarization failed with status: $STATUS -- fetching log" >&2
+            xcrun notarytool log "$SUBMISSION_ID" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" || true
+            exit 1
+          fi
+
+          # Staple the ticket so Gatekeeper passes offline, then re-zip the
+          # stapled bundle for the release artifact (ditto preserves the
+          # symlinks/permissions that actions/upload-artifact's own zip of a
+          # bare directory does not).
+          xcrun stapler staple "$APP"
+          ditto -c -k --keepParent "$APP" "zig-out/Maat-macos-notarized.zip"
+
+      - name: Clean up keychain
+        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && env.NOTARIZE == 'true' }}
+        run: security delete-keychain build.keychain-db || true
+
       - uses: actions/upload-artifact@v4
         with:
           name: Maat-Native-macos
           path: zig-out/package
+
+      - name: Upload notarized zip
+        if: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && env.NOTARIZE == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Maat-Native-macos-notarized
+          path: zig-out/Maat-macos-notarized.zip
+
+  # Rule (Tech Stack note, est. 2026-07-14): OSS ships with built-in release
+  # updates -- CI publishes a versioned GitHub release on every v* tag push,
+  # and the tag MUST match the app's manifest version, or the in-app update
+  # check nags users about the build they're already running.
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [web-check, windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag matches manifest version
+        run: |
+          set -euo pipefail
+          MANIFEST_VERSION="$(grep -oE '\.version = "[^"]+"' app.zon | head -1 | sed -E 's/.*"([^"]+)"/\1/')"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          echo "tag=$GITHUB_REF_NAME app.zon=v$MANIFEST_VERSION package.json=v$PKG_VERSION"
+          if [ "v$MANIFEST_VERSION" != "$GITHUB_REF_NAME" ] || [ "v$PKG_VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match the manifest version -- bump app.zon/package.json (or fix the tag) and re-tag" >&2
+            exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Assemble release assets
+        run: |
+          set -euo pipefail
+          cd artifacts
+          (cd Maat-Native-windows && zip -qr "../Maat-Native-windows-$GITHUB_REF_NAME.zip" .)
+          # Prefer the notarized ditto-zip (signed + stapled, permissions
+          # intact); fall back to zipping the bare package only if the
+          # signing secrets weren't configured for this run.
+          if [ -f "Maat-Native-macos-notarized/Maat-macos-notarized.zip" ]; then
+            cp "Maat-Native-macos-notarized/Maat-macos-notarized.zip" "Maat-Native-macos-$GITHUB_REF_NAME.zip"
+          else
+            echo "::warning::No notarized macOS build -- releasing an unsigned .app"
+            (cd Maat-Native-macos && zip -qr "../Maat-Native-macos-$GITHUB_REF_NAME.zip" .)
+          fi
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Maat Native $GITHUB_REF_NAME" \
+            --generate-notes \
+            "artifacts/Maat-Native-windows-$GITHUB_REF_NAME.zip" \
+            "artifacts/Maat-Native-macos-$GITHUB_REF_NAME.zip"

@@ -29,6 +29,8 @@ export function assetKindLabel(kind: AssetKind) {
       return "Archive";
     case "design":
       return "Design";
+    case "model":
+      return "3D Model";
     default:
       return "File";
   }
@@ -51,6 +53,8 @@ export function assetIcon(kind: AssetKind) {
       return Archive;
     case "design":
       return Palette;
+    case "model":
+      return Layers3;
     default:
       return File;
   }
@@ -66,6 +70,7 @@ export function assetAccent(asset: Asset) {
     document: "from-black/10 to-white/0",
     archive: "from-black/10 to-white/0",
     design: "from-black/10 to-white/0",
+    model: "from-black/10 to-white/0",
     unknown: "from-black/10 to-white/0",
   };
   return accents[asset.kind] ?? accents.unknown;

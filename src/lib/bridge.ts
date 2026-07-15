@@ -482,6 +482,17 @@ export async function listenForNativeDrops(onDrop: (paths: string[]) => void): P
 }
 
 export function assetPreviewUrl(asset: Asset): string | null {
+  if (asset.kind === "model") {
+    // Model previews are webview-rendered PNGs (see lib/modelThumbs.ts) -- only the
+    // thumbnail is an image; managedPath is the GLB itself and must never be an <img> src.
+    if (asset.previewStatus !== "ready" || !asset.thumbnailPath) return null;
+    if (!isNative()) return asset.thumbnailPath;
+    if (!assetBaseCache) {
+      void ensureAssetBase().catch(() => undefined);
+      return null;
+    }
+    return `${assetBaseCache}/file?p=${encodeURIComponent(asset.thumbnailPath)}`;
+  }
   if (asset.kind !== "image" || asset.previewStatus === "fallback") return null;
   const previewPath = asset.thumbnailPath ?? asset.managedPath;
   if (isNative()) {
@@ -510,6 +521,35 @@ export function assetOriginalUrl(asset: Asset): string | null {
     return `${assetBaseCache}/file?p=${encodeURIComponent(asset.managedPath)}`;
   }
   return asset.managedPath ? asset.managedPath : mockImageDataUrl(asset);
+}
+
+// The raw model file (GLB/glTF) for the 3D viewer -- distinct from assetPreviewUrl, which
+// for models is a rendered PNG thumbnail.
+export function assetModelUrl(asset: Asset): string | null {
+  if (asset.kind !== "model" || !asset.managedPath) return null;
+  if (!isNative()) return asset.managedPath;
+  if (!assetBaseCache) {
+    void ensureAssetBase().catch(() => undefined);
+    return null;
+  }
+  return `${assetBaseCache}/file?p=${encodeURIComponent(asset.managedPath)}`;
+}
+
+// Persists a webview-rendered preview PNG as an asset's thumbnail: uploads the bytes via
+// POST /upload (same channel as oversized clipboard items), then hands the temp path to the
+// engine, which moves it into the board's thumbs dir and flips previewStatus to "ready".
+// Returns the updated asset row.
+export async function setAssetThumbnail(boardId: string, assetId: string, png: Blob): Promise<Asset | null> {
+  if (!isNative()) return null;
+  const serverInfo = await ensureServerInfo();
+  const response = await fetch(`${serverInfo.assetBase}/upload`, {
+    method: "POST",
+    headers: { "X-Upload-Token": serverInfo.uploadToken },
+    body: png,
+  });
+  if (!response.ok) throw new Error(`Thumbnail upload failed: HTTP ${response.status}`);
+  const { path } = (await response.json()) as { path: string };
+  return invoke<Asset>("set_asset_thumbnail", { boardId, assetId, uploadPath: path });
 }
 
 const board: Board = {

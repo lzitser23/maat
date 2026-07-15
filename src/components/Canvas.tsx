@@ -3,7 +3,7 @@ import type { ExcalidrawImperativeAPI, NormalizedZoomValue } from "@excalidraw/e
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 import { FileDown, Info, Loader2, X } from "lucide-react";
 import { assetIcon, assetKindLabel } from "../lib/asset";
-import { assetOriginalUrl, assetPreviewUrl, listenForNativeDrops, type ClipboardImportItem } from "../lib/bridge";
+import { assetModelUrl, assetOriginalUrl, assetPreviewUrl, listenForNativeDrops, type ClipboardImportItem } from "../lib/bridge";
 import { formatBytes } from "../lib/format";
 import { filteredNodes } from "../lib/scope";
 import type { Asset, BoardNode, BoardScope, BoardView, Frame } from "../types";
@@ -12,6 +12,10 @@ import type { Asset, BoardNode, BoardScope, BoardView, Frame } from "../types";
 // entry chunk. The overlay still mounts as soon as the board renders (for two-way viewport sync and
 // so saved sketches are visible), but the download no longer blocks the shell's first paint.
 const DrawingOverlay = lazy(() => import("./DrawingOverlay"));
+
+// Three.js is heavy too — the interactive 3D viewer only downloads the first time a model
+// asset is actually spotlighted (lib/modelThumbs.ts shares the same chunk).
+const ModelViewer = lazy(() => import("./ModelViewer"));
 
 const FOCUS_NODE_EVENT = "maat-focus-node";
 const MIN_SCALE = 0.12;
@@ -281,6 +285,10 @@ export function Canvas({
   };
 
   const handleWheel = (event: React.WheelEvent) => {
+    // Wheel over a spotlighted 3D model dollies the model (OrbitControls' own listener),
+    // not the board — this handler runs at the capture phase, so it must step aside
+    // before the event ever reaches the viewer's canvas.
+    if (event.target instanceof Element && event.target.closest("[data-model-viewer]")) return;
     event.preventDefault();
     const current = viewportRef.current;
 
@@ -801,6 +809,8 @@ function AssetCard({
   const Icon = assetIcon(asset.kind);
   const focused = spotlight === "focused";
   const previewUrl = assetPreviewUrl(asset);
+  // Spotlighted 3D models swap the static thumbnail for the live orbit viewer.
+  const modelUrl = focused && asset.kind === "model" ? assetModelUrl(asset) : null;
   // Focused view: start from the (already-loaded) thumbnail, then swap to the full-res original once
   // it's decoded, so focusing an image doesn't show a permanently blurry downscaled thumbnail.
   const originalUrl = focused ? assetOriginalUrl(asset) : null;
@@ -871,8 +881,25 @@ function AssetCard({
           </button>
         )}
         <div className="asset-card__media min-h-0 flex-1 overflow-hidden bg-[var(--asset-media)]">
-          {displayUrl ? (
-            <img src={displayUrl} alt="" className="h-full w-full object-cover" draggable={false} />
+          {modelUrl ? (
+            <Suspense
+              fallback={
+                <div className="flex h-full w-full items-center justify-center">
+                  <Loader2 className="h-5 w-5 animate-spin text-[var(--muted)]" />
+                </div>
+              }
+            >
+              <ModelViewer src={modelUrl} />
+            </Suspense>
+          ) : displayUrl ? (
+            <img
+              src={displayUrl}
+              alt=""
+              // Model thumbnails are square renders on a transparent background — cropping
+              // them with object-cover lops off the model itself.
+              className={`h-full w-full ${asset.kind === "model" ? "object-contain" : "object-cover"}`}
+              draggable={false}
+            />
           ) : (
             <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-5 text-center">
               <div className="flex h-14 w-14 items-center justify-center rounded-md border border-[var(--line)] bg-[var(--panel)]">
