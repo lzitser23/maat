@@ -134,13 +134,15 @@ jobs:
       # APPLE_ID being set, so merges to main keep working (unsigned)
       # until the repo secrets exist.
       #
-      # Required repo secrets:
-      #   MACOS_CERTIFICATE_P12      base64 of a "Developer ID Application"
+      # Required repo secrets (same six names as the Spoon and Quad repos --
+      # one shared Developer ID convention across all macOS-signing repos):
+      #   APPLE_CERTIFICATE          base64 of the "Developer ID Application"
       #                              .p12 export (cert + private key):
       #                              base64 -i cert.p12 | pbcopy
-      #   MACOS_CERTIFICATE_PASSWORD the .p12's export password
+      #   APPLE_CERTIFICATE_PASSWORD the .p12's export password
+      #   APPLE_SIGNING_IDENTITY     e.g. "Developer ID Application: Name (TEAMID)"
       #   APPLE_ID                   Apple ID email of the developer account
-      #   APPLE_APP_SPECIFIC_PASSWORD app-specific password for that Apple ID
+      #   APPLE_PASSWORD             app-specific password for that Apple ID
       #                              (appleid.apple.com -> Sign-In and
       #                              Security -> App-Specific Passwords)
       #   APPLE_TEAM_ID              10-char team id (developer.apple.com ->
@@ -148,16 +150,16 @@ jobs:
       - name: Import signing certificate
         if: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && env.NOTARIZE == 'true' }}
         env:
-          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
-          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           set -euo pipefail
           KEYCHAIN_PASSWORD="$(uuidgen)"
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain-db
           security set-keychain-settings -lut 21600 build.keychain-db
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain-db
-          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > /tmp/cert.p12
-          security import /tmp/cert.p12 -k build.keychain-db -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          echo "$APPLE_CERTIFICATE" | base64 --decode > /tmp/cert.p12
+          security import /tmp/cert.p12 -k build.keychain-db -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           rm /tmp/cert.p12
           # Allow codesign to use the key non-interactively (headless runner).
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain-db
@@ -167,8 +169,9 @@ jobs:
         if: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && env.NOTARIZE == 'true' }}
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
           # The packager writes the bundle as the one directory under
@@ -184,7 +187,7 @@ jobs:
           fi
           echo "Signing $APP"
 
-          IDENTITY="Developer ID Application"
+          IDENTITY="${APPLE_SIGNING_IDENTITY:-Developer ID Application}"
           # Inner Mach-O files first (dylibs the SDK may ship), then the
           # bundle itself, with hardened runtime -- required by notarization.
           find "$APP/Contents" -type f \( -name "*.dylib" -o -name "*.so" \) \
@@ -195,7 +198,7 @@ jobs:
           ditto -c -k --keepParent "$APP" /tmp/notarize.zip
           xcrun notarytool submit /tmp/notarize.zip \
             --apple-id "$APPLE_ID" \
-            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --password "$APPLE_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait --output-format json | tee /tmp/notary.json
           STATUS="$(python3 -c 'import json;print(json.load(open("/tmp/notary.json"))["status"])')"
@@ -204,7 +207,7 @@ jobs:
             echo "Notarization failed with status: $STATUS -- fetching log" >&2
             xcrun notarytool log "$SUBMISSION_ID" \
               --apple-id "$APPLE_ID" \
-              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --password "$APPLE_PASSWORD" \
               --team-id "$APPLE_TEAM_ID" || true
             exit 1
           fi
