@@ -23,7 +23,7 @@
 // installed (see the workflow comment for why windows-latest is expected
 // to provide both, and the self-hosted-runner fallback if it ever doesn't).
 import { chromium } from "@playwright/test";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
@@ -36,7 +36,13 @@ const packageRoot = path.join(repoRoot, "zig-out", "package");
 // Distinct from native-smoke.mjs's 9412 so the two scripts could in
 // principle run back-to-back without a leftover listener on the port.
 const CDP_PORT = 9413;
-const CDP_URL = `http://127.0.0.1:${CDP_PORT}`;
+// Both loopback literals: the WebView2 Runtime on newer windows-latest
+// images (first seen on win25-vs2026/20260714.173) brings the CDP listener
+// up on IPv6 [::1] without a 127.0.0.1 IPv4 counterpart, while older
+// runtimes bind IPv4 -- the app itself is healthy either way (its
+// diagnostic log shows frames + bridge round-trips), so poll both instead
+// of hard-failing on the IPv4-only assumption.
+const CDP_URLS = [`http://127.0.0.1:${CDP_PORT}`, `http://[::1]:${CDP_PORT}`];
 const BOARD_TESTID = "maat-canvas";
 const READY_TIMEOUT_MS = 30000;
 
@@ -75,15 +81,36 @@ async function findWindowsPackageBinDir() {
 
 async function waitForCdp(deadline) {
   while (Date.now() < deadline) {
-    try {
-      const res = await fetch(`${CDP_URL}/json/version`);
-      if (res.ok) return true;
-    } catch {
-      // not up yet
+    for (const url of CDP_URLS) {
+      try {
+        const res = await fetch(`${url}/json/version`);
+        if (res.ok) return url;
+      } catch {
+        // not up yet on this loopback literal
+      }
     }
     await sleep(300);
   }
-  return false;
+  return null;
+}
+
+// Failure forensics: shows whether anything is listening on the CDP port at
+// all, and on which loopback literal/address family -- distinguishes "the
+// runtime ignored --remote-debugging-port entirely" from "it bound the port
+// somewhere this script didn't poll".
+function dumpCdpListeners() {
+  return new Promise((resolve) => {
+    execFile("netstat", ["-ano"], { windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
+      const lines = (stdout || "").split("\n").filter((l) => l.includes(`:${CDP_PORT} `));
+      if (lines.length === 0) {
+        log(`no listener on :${CDP_PORT} at failure time (debug arg likely ignored by this WebView2 runtime)`);
+      } else {
+        log(`sockets on :${CDP_PORT} at failure time:`);
+        for (const l of lines) console.log(l.trimEnd());
+      }
+      resolve();
+    });
+  });
 }
 
 // The packaged exe computes its catalog storage root (%APPDATA%\MaatNative,
@@ -152,13 +179,13 @@ async function main() {
       });
 
       const deadline = Date.now() + READY_TIMEOUT_MS;
-      const cdpUp = await waitForCdp(deadline);
-      if (!cdpUp) {
-        failReason = `CDP endpoint never came up at ${CDP_URL} within ${READY_TIMEOUT_MS}ms (blank WebView / launch-failure symptom)`;
+      const cdpUrl = await waitForCdp(deadline);
+      if (!cdpUrl) {
+        failReason = `CDP endpoint never came up at ${CDP_URLS.join(" or ")} within ${READY_TIMEOUT_MS}ms (blank WebView / launch-failure symptom)`;
       } else if (exitedEarly) {
         failReason = "app process exited before CDP came up";
       } else {
-        const browser = await chromium.connectOverCDP(CDP_URL);
+        const browser = await chromium.connectOverCDP(cdpUrl);
         // The CDP endpoint can come up before WebView2 creates its first
         // page (seen on slower CI runners) -- poll instead of failing on
         // the first look.
@@ -208,6 +235,9 @@ async function main() {
     // which does). The real %APPDATA%\MaatNative and
     // %LOCALAPPDATA%\com.lzitser.maat-native are never touched by this
     // script.
+    if (!pass && child?.pid) {
+      await dumpCdpListeners();
+    }
     if (child?.pid) {
       await runToCompletion("taskkill", ["/PID", String(child.pid), "/T", "/F"]);
     }
