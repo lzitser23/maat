@@ -231,6 +231,51 @@ jobs:
           xcrun stapler staple "$APP"
           ditto -c -k --keepParent "$APP" "zig-out/Maat-macos-notarized.zip"
 
+      # DMG is the conventional non-App-Store install experience
+      # (drag-to-Applications). Built from the already-stapled .app; the DMG
+      # container itself then gets its own sign + notarize + staple pass --
+      # Gatekeeper evaluates the DMG before ever looking at the .app inside.
+      # Must run before "Clean up keychain" (codesign needs the identity).
+      - name: Build, notarize, and staple DMG
+        if: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && env.NOTARIZE == 'true' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          APP=""
+          for dir in zig-out/package/*/; do
+            if [ -f "${dir}Contents/Info.plist" ]; then APP="${dir%/}"; break; fi
+          done
+          [ -n "$APP" ] || { echo "No .app bundle found under zig-out/package" >&2; exit 1; }
+
+          STAGING="$(mktemp -d)"
+          ditto "$APP" "$STAGING/$(basename "$APP")"
+          ln -s /Applications "$STAGING/Applications"
+          hdiutil create -volname "Maat" -srcfolder "$STAGING" -ov -format UDZO "zig-out/Maat-macos.dmg"
+
+          IDENTITY="${APPLE_SIGNING_IDENTITY:-Developer ID Application}"
+          codesign --force --timestamp --sign "$IDENTITY" "zig-out/Maat-macos.dmg"
+
+          xcrun notarytool submit "zig-out/Maat-macos.dmg" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --output-format json | tee /tmp/notary-dmg.json
+          STATUS="$(python3 -c 'import json;print(json.load(open("/tmp/notary-dmg.json"))["status"])')"
+          if [ "$STATUS" != "Accepted" ]; then
+            SUBMISSION_ID="$(python3 -c 'import json;print(json.load(open("/tmp/notary-dmg.json"))["id"])')"
+            echo "DMG notarization failed with status: $STATUS -- fetching log" >&2
+            xcrun notarytool log "$SUBMISSION_ID" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" || true
+            exit 1
+          fi
+          xcrun stapler staple "zig-out/Maat-macos.dmg"
+
       - name: Clean up keychain
         if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && env.NOTARIZE == 'true' }}
         run: security delete-keychain build.keychain-db || true
@@ -246,6 +291,13 @@ jobs:
         with:
           name: Maat-Native-macos-notarized
           path: zig-out/Maat-macos-notarized.zip
+
+      - name: Upload DMG
+        if: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && env.NOTARIZE == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: Maat-Native-macos-dmg
+          path: zig-out/Maat-macos.dmg
 
   # Rule (Tech Stack note, est. 2026-07-14): OSS ships with built-in release
   # updates -- CI publishes a versioned GitHub release on every v* tag push,
@@ -288,12 +340,21 @@ jobs:
             echo "::warning::No notarized macOS build -- releasing an unsigned .app"
             (cd Maat-Native-macos && zip -qr "../Maat-Native-macos-$GITHUB_REF_NAME.zip" .)
           fi
+          if [ -f "Maat-Native-macos-dmg/Maat-macos.dmg" ]; then
+            cp "Maat-Native-macos-dmg/Maat-macos.dmg" "Maat-$GITHUB_REF_NAME.dmg"
+          else
+            echo "::warning::No DMG artifact (signing secrets not configured for this run)"
+          fi
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          ASSETS=(
+            "artifacts/Maat-Native-windows-$GITHUB_REF_NAME.zip"
+            "artifacts/Maat-Native-macos-$GITHUB_REF_NAME.zip"
+          )
+          [ -f "artifacts/Maat-$GITHUB_REF_NAME.dmg" ] && ASSETS+=("artifacts/Maat-$GITHUB_REF_NAME.dmg")
           gh release create "$GITHUB_REF_NAME" \
             --title "Maat Native $GITHUB_REF_NAME" \
             --generate-notes \
-            "artifacts/Maat-Native-windows-$GITHUB_REF_NAME.zip" \
-            "artifacts/Maat-Native-macos-$GITHUB_REF_NAME.zip"
+            "${ASSETS[@]}"
