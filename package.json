@@ -12,7 +12,7 @@
     "check:bundle": "node scripts/check-bundle-size.mjs",
     "native:dev": "native dev --yes",
     "native:build": "native build --yes",
-    "native:package": "node scripts/package-fixup.mjs windows",
+    "portable:windows": "pnpm build && zig build -Doptimize=ReleaseFast",
     "native:package:macos": "node scripts/package-fixup.mjs macos",
     "test:zig": "zig build test",
     "smoke:native": "node scripts/native-smoke.mjs",

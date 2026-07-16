@@ -39,7 +39,7 @@ jobs:
       - run: pnpm test:e2e
 
   windows:
-    name: Windows package
+    name: Windows portable exe
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -59,26 +59,42 @@ jobs:
       # deterministic. vercel-labs/native#72 (published npm package omitting
       # assets/, incl. assets/native-sdk.manifest, the Win32 app manifest
       # the Windows build graph needs) was fixed upstream in 0.4.1; 0.4.3 is
-      # the latest verified-working version as of this pin.
+      # the latest verified-working version as of this pin. Still needed
+      # even though this job no longer runs the `native` CLI itself:
+      # build.zig compiles the app against this package's SDK sources
+      # (discoverNativeSdkPath resolves it via `npm root -g`).
       - run: npm install -g @native-sdk/cli@0.4.3
+      # Deliberately before `pnpm build`: proves the test suite stays green
+      # on a checkout with no dist/ (build.zig's embeddedFrontendModule
+      # generates a lazy @compileError stub there instead of failing
+      # configure -- only the exe build below actually needs the frontend).
       - run: zig build test
-      - run: pnpm run native:package
-      # Packaged smoke test (issue #9): launches the actual packaged
-      # zig-out/package/**/bin/maat-native.exe (scripts/packaged-smoke.mjs)
-      # -- not just confirming `native package` exited 0 -- and fails the
-      # build on a blank WebView, a missing WebView2 loader, missing
-      # frontend assets, or a broken native-bridge round-trip. Runs on
+      # The two halves of the portable artifact: the frontend build that
+      # embeddedFrontendModule embeds, then the ReleaseFast exe itself
+      # (same optimize mode `native build --yes` used when this job still
+      # went through `native package`). No packaging step follows --
+      # zig-out/bin/maat-native.exe IS the complete Windows artifact.
+      - run: pnpm build
+      - run: zig build -Doptimize=ReleaseFast
+      # Portable smoke test (issue #9, reshaped for the single-file exe):
+      # scripts/packaged-smoke.mjs copies just the built exe into an empty
+      # temp directory and launches it there -- not just confirming the
+      # build exited 0 -- and fails the build on a blank WebView, a broken
+      # embedded-frontend serve, or a broken native-bridge round-trip.
+      # Running from an empty dir is the portability proof itself: any
+      # lingering dependence on dist/ or WebView2Loader.dll sibling files
+      # fails here instead of hiding behind the repo checkout. Runs on
       # GitHub-hosted windows-latest deliberately: unlike ubuntu-latest (no
       # WebView2 at all, even under a virtual display) or a headless
       # container, windows-latest gives every job an interactive desktop
       # session, and WebView2 Runtime ships preinstalled on the image --
       # both are required for WebView2 to actually attach a browser process
       # here (see the smoke script's CDP-based assertions). This step must
-      # run after packaging and before upload, and must not rebuild the
-      # package, so the artifact uploaded below is the exact one the smoke
-      # test exercised. Cleans up the app process and %APPDATA%\MaatNative /
-      # %LOCALAPPDATA%\com.lzitser.maat-native on both pass and fail, so a
-      # failed run doesn't poison the runner for anything after it.
+      # run after the build and before upload, and must not rebuild, so the
+      # artifact uploaded below is the exact exe the smoke test exercised.
+      # Cleans up the app process and its isolated temp AppData on both
+      # pass and fail, so a failed run doesn't poison the runner for
+      # anything after it.
       #
       # Fallback if GitHub-hosted windows-latest ever stops reliably
       # providing a usable desktop session or preinstalled WebView2: switch
@@ -90,8 +106,8 @@ jobs:
       - run: pnpm run smoke:packaged
       - uses: actions/upload-artifact@v7
         with:
-          name: Maat-Native-windows
-          path: zig-out/package
+          name: Maat-portable-windows
+          path: zig-out/bin/maat-native.exe
 
   macos:
     name: macOS package
@@ -330,7 +346,10 @@ jobs:
         run: |
           set -euo pipefail
           cd artifacts
-          (cd Maat-Native-windows && zip -qr "../Maat-Native-windows-$GITHUB_REF_NAME.zip" .)
+          # The Windows asset is the portable exe itself, no archive around
+          # it -- download and double-click is the whole install story
+          # (supersedes the old bin/+dist/ zip).
+          cp "Maat-portable-windows/maat-native.exe" "Maat-portable-$GITHUB_REF_NAME.exe"
           # Prefer the notarized ditto-zip (signed + stapled, permissions
           # intact); fall back to zipping the bare package only if the
           # signing secrets weren't configured for this run.
@@ -350,7 +369,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ASSETS=(
-            "artifacts/Maat-Native-windows-$GITHUB_REF_NAME.zip"
+            "artifacts/Maat-portable-$GITHUB_REF_NAME.exe"
             "artifacts/Maat-Native-macos-$GITHUB_REF_NAME.zip"
           )
           [ -f "artifacts/Maat-$GITHUB_REF_NAME.dmg" ] && ASSETS+=("artifacts/Maat-$GITHUB_REF_NAME.dmg")
