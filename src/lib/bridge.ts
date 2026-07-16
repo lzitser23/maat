@@ -734,8 +734,15 @@ function cloneBoardView(view: BoardView): BoardView {
   };
 }
 
+// Placeholder art sized to the asset's own width/height (falling back to a 480×320 landscape default)
+// so a portrait-metadata mock asset (e.g. "Palette capture") actually renders as a portrait image,
+// not a landscape placeholder squashed into a portrait box -- needed to exercise real fit-to-viewport
+// behavior for focus/spotlight in the browser preview and in e2e.
 function mockImageDataUrl(asset: Asset) {
   const title = asset.name.slice(0, 22).replace(/[<&>"]/g, "");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="480" height="320" viewBox="0 0 480 320"><rect width="480" height="320" fill="#fff"/><rect x="20" y="20" width="440" height="280" fill="none" stroke="#000" stroke-width="4"/><path d="M40 250 160 140l78 70 58-52 144 112" fill="none" stroke="#000" stroke-width="10" stroke-linejoin="round"/><circle cx="360" cy="88" r="34" fill="#000"/><text x="40" y="52" fill="#000" font-family="Arial, sans-serif" font-size="24" font-weight="700">${title}</text></svg>`;
+  const width = asset.width && asset.width > 0 ? asset.width : 480;
+  const height = asset.height && asset.height > 0 ? asset.height : 320;
+  const short = Math.min(width, height);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="${width}" height="${height}" fill="#fff"/><rect x="${short * 0.04}" y="${short * 0.04}" width="${width - short * 0.08}" height="${height - short * 0.08}" fill="none" stroke="#000" stroke-width="4"/><path d="M${width * 0.08} ${height * 0.78} L${width * 0.33} ${height * 0.44} L${width * 0.5} ${height * 0.6} L${width * 0.62} ${height * 0.44} L${width * 0.9} ${height * 0.86}" fill="none" stroke="#000" stroke-width="${Math.max(4, short * 0.02)}" stroke-linejoin="round"/><circle cx="${width * 0.74}" cy="${height * 0.24}" r="${short * 0.09}" fill="#000"/><text x="${width * 0.08}" y="${height * 0.11}" fill="#000" font-family="Arial, sans-serif" font-size="${Math.max(14, short * 0.05)}" font-weight="700">${title}</text></svg>`;
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 }
