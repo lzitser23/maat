@@ -413,6 +413,13 @@ pub const ImportCandidate = struct {
     folders: []const []const u8,
     note: ?[]u8,
     source_url: ?[]u8,
+    /// AI-training-dataset sidecar caption (see `folderCandidates`'s doc
+    /// comment): the trimmed content of a same-stem `.txt` file found next to
+    /// this one during a folder import. `null` for every other import path
+    /// (Eagle, single-file) and for a folder-import candidate with no sidecar.
+    /// Defaults to `null` so `singleFileCandidate`/`eagleCandidates`'s existing
+    /// struct literals don't need to change.
+    caption: ?[]u8 = null,
 
     pub fn deinit(self: ImportCandidate, allocator: std.mem.Allocator) void {
         allocator.free(self.file_path);
@@ -425,6 +432,7 @@ pub const ImportCandidate = struct {
         allocator.free(self.folders);
         if (self.note) |n| allocator.free(n);
         if (self.source_url) |s| allocator.free(s);
+        if (self.caption) |cap| allocator.free(cap);
     }
 };
 
@@ -445,12 +453,63 @@ fn singleFileCandidate(allocator: std.mem.Allocator, path: []const u8) ![]Import
     return list;
 }
 
+/// True when `name`'s extension is `.txt`, case-insensitively (`.TXT`, `.Txt`,
+/// etc. all count) - the one sidecar extension `folderCandidates`'s caption
+/// pairing recognizes. Any other extension (e.g. `.caption`, `.json`) is never
+/// treated as a sidecar, regardless of a matching basename.
+fn isSidecarCaptionFile(name: []const u8) bool {
+    const ext = std.fs.path.extension(name);
+    return ext.len > 1 and std.ascii.eqlIgnoreCase(ext[1..], "txt");
+}
+
+/// Builds the case-insensitive key `folderCandidates` groups sidecar `.txt`
+/// files with their same-basename siblings by: the file's directory (relative
+/// to the imported folder) plus its extension-less stem, both lowercased, and
+/// joined with an ASCII unit-separator (0x1F) - a byte that never appears in a
+/// real path segment, so `dir="a", stem="bc"` can never collide with
+/// `dir="ab", stem="c"`. Lowercasing both halves (not just the stem) makes the
+/// match tolerant of the mixed-case directory names Windows/macOS filesystems
+/// happily allow, matching the case-insensitive comparisons already used
+/// elsewhere in this file (`isEagleThumbnail`, `isEagleLibrary`).
+fn sidecarPairKey(allocator: std.mem.Allocator, rel_path: []const u8) ![]u8 {
+    const dirname = std.fs.path.dirname(rel_path) orelse "";
+    const stem = std.fs.path.stem(std.fs.path.basename(rel_path));
+    const combined = try std.fmt.allocPrint(allocator, "{s}\x1f{s}", .{ dirname, stem });
+    defer allocator.free(combined);
+    const out = try allocator.alloc(u8, combined.len);
+    for (combined, 0..) |ch, i| out[i] = std.ascii.toLower(ch);
+    return out;
+}
+
 /// Mirrors `folder_candidates`: recursive walk, `follow_links(false)` semantics (a
 /// symlink's own dirent kind is never `.file` or `.directory` from the OS's point of
 /// view when unresolved, so `Dir.Walker` - which only recurses into `.directory`
 /// entries and which this function only keeps `.file` entries from - naturally skips
 /// symlinks both as traversal targets and as import candidates), filtered to
 /// dot-prefixed *file* names only (hidden directories are still walked into).
+///
+/// AI-training-dataset sidecar captions: when a `.txt` file sits next to another
+/// file with the same basename in the same directory (e.g. `photo001.png` +
+/// `photo001.txt`), the `.txt` file's trimmed content becomes that other file's
+/// `caption` (see `Asset.caption`) instead of being imported as its own asset -
+/// its content now lives on the paired asset, so importing it separately would
+/// just be a redundant, orphaned document. Rules, precisely:
+///   * Sidecar extension must be `.txt`, case-insensitively - `.caption`/`.json`/
+///     etc. are never treated as sidecars, no matter the basename.
+///   * The basename match (directory + extension-less stem) is case-insensitive
+///     on both halves (see `sidecarPairKey`).
+///   * A `.txt` file is only suppressed as its own candidate when a sibling with
+///     the same key exists among the OTHER (non-`.txt`) files in this same
+///     folder walk - hidden/filtered-out files don't count as siblings. An
+///     unpaired `.txt` (no matching sibling) is imported normally, same as
+///     before this feature existed.
+///   * If more than one non-`.txt` sibling shares the key (e.g. both
+///     `photo001.png` and `photo001.jpg` sit beside `photo001.txt`), every one
+///     of them receives the same caption text; the single `.txt` is still only
+///     consumed once.
+///   * An empty (after trimming whitespace) or unreadable `.txt` sidecar is
+///     treated as "no caption" and the `.txt` falls back to being imported as
+///     its own (normal document) candidate, rather than silently vanishing.
 fn folderCandidates(allocator: std.mem.Allocator, io: std.Io, folder_abs: []const u8) ![]ImportCandidate {
     var dir = try std.Io.Dir.openDirAbsolute(io, folder_abs, .{ .iterate = true });
     defer dir.close(io);
@@ -458,10 +517,20 @@ fn folderCandidates(allocator: std.mem.Allocator, io: std.Io, folder_abs: []cons
     var walker = try std.Io.Dir.walk(dir, allocator);
     defer walker.deinit();
 
-    var list: std.ArrayList(ImportCandidate) = .empty;
-    errdefer {
-        for (list.items) |c| c.deinit(allocator);
-        list.deinit(allocator);
+    const CollectedEntry = struct {
+        abs_path: []u8,
+        rel_path: []u8,
+        display_name: []u8,
+    };
+
+    var collected: std.ArrayList(CollectedEntry) = .empty;
+    defer {
+        for (collected.items) |e| {
+            allocator.free(e.abs_path);
+            allocator.free(e.rel_path);
+            allocator.free(e.display_name);
+        }
+        collected.deinit(allocator);
     }
 
     while (try walker.next(io)) |entry| {
@@ -470,13 +539,91 @@ fn folderCandidates(allocator: std.mem.Allocator, io: std.Io, folder_abs: []cons
 
         const abs_path = try std.fs.path.join(allocator, &.{ folder_abs, entry.path });
         errdefer allocator.free(abs_path);
+        const rel_path = try allocator.dupe(u8, entry.path);
+        errdefer allocator.free(rel_path);
         const display_name = try allocator.dupe(u8, entry.basename);
         errdefer allocator.free(display_name);
 
+        try collected.append(allocator, .{ .abs_path = abs_path, .rel_path = rel_path, .display_name = display_name });
+    }
+
+    // Pass 1: which pair-keys have at least one non-`.txt` file (a candidate
+    // sidecar match must have a real sibling to pair with).
+    var nontxt_keys = std.StringHashMap(void).init(allocator);
+    defer {
+        var it = nontxt_keys.iterator();
+        while (it.next()) |kv| allocator.free(kv.key_ptr.*);
+        nontxt_keys.deinit();
+    }
+    for (collected.items) |e| {
+        if (isSidecarCaptionFile(e.display_name)) continue;
+        const key = try sidecarPairKey(allocator, e.rel_path);
+        if (nontxt_keys.contains(key)) {
+            allocator.free(key);
+            continue;
+        }
+        try nontxt_keys.put(key, {});
+    }
+
+    // Pass 2: for every `.txt` file whose key has a non-`.txt` sibling, read
+    // and trim its content; a non-empty result becomes that key's caption
+    // (and marks the `.txt` as consumed, below).
+    var caption_by_key = std.StringHashMap([]u8).init(allocator);
+    defer {
+        var it = caption_by_key.iterator();
+        while (it.next()) |kv| {
+            allocator.free(kv.key_ptr.*);
+            allocator.free(kv.value_ptr.*);
+        }
+        caption_by_key.deinit();
+    }
+    for (collected.items) |e| {
+        if (!isSidecarCaptionFile(e.display_name)) continue;
+        const key = try sidecarPairKey(allocator, e.rel_path);
+        if (!nontxt_keys.contains(key)) {
+            allocator.free(key);
+            continue; // no sibling to pair with -- falls back to a normal candidate below
+        }
+
+        const content = std.Io.Dir.cwd().readFileAlloc(io, e.abs_path, allocator, .limited(1024 * 1024)) catch {
+            allocator.free(key);
+            continue; // unreadable sidecar -- falls back to a normal candidate below
+        };
+        defer allocator.free(content);
+        const trimmed = std.mem.trim(u8, content, " \t\r\n");
+        if (trimmed.len == 0) {
+            allocator.free(key);
+            continue; // empty sidecar -- falls back to a normal candidate below
+        }
+
+        try caption_by_key.put(key, try allocator.dupe(u8, trimmed));
+    }
+
+    var list: std.ArrayList(ImportCandidate) = .empty;
+    errdefer {
+        for (list.items) |c| c.deinit(allocator);
+        list.deinit(allocator);
+    }
+
+    for (collected.items) |e| {
+        const is_txt = isSidecarCaptionFile(e.display_name);
+        const key = try sidecarPairKey(allocator, e.rel_path);
+        defer allocator.free(key);
+
+        // A `.txt` file whose content was consumed as another candidate's
+        // caption is not imported as its own asset (see doc comment above).
+        if (is_txt and caption_by_key.contains(key)) continue;
+
+        const caption: ?[]u8 = if (!is_txt) blk: {
+            const cap = caption_by_key.get(key) orelse break :blk null;
+            break :blk try allocator.dupe(u8, cap);
+        } else null;
+        errdefer if (caption) |cap| allocator.free(cap);
+
         try list.append(allocator, .{
-            .file_path = abs_path,
+            .file_path = try allocator.dupe(u8, e.abs_path),
             .metadata_json = null,
-            .display_name = display_name,
+            .display_name = try allocator.dupe(u8, e.display_name),
             .thumbnail_path = null,
             .width = null,
             .height = null,
@@ -484,6 +631,7 @@ fn folderCandidates(allocator: std.mem.Allocator, io: std.Io, folder_abs: []cons
             .folders = try allocator.alloc([]const u8, 0),
             .note = null,
             .source_url = null,
+            .caption = caption,
         });
     }
 
@@ -879,6 +1027,8 @@ fn importOne(
         .trashedAt = null,
         .createdAt = try nowRfc3339(io, allocator),
         .metadataJson = if (candidate.metadata_json) |m| try allocator.dupe(u8, m) else null,
+        .caption = if (candidate.caption) |cap| try allocator.dupe(u8, cap) else null,
+        .prompt = null,
     };
     // Ownership of preview.previewStatus / preview.thumbnailPath transferred into
     // `asset`; the two errdefers above are now moot (asset.deinit + the
