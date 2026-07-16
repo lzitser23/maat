@@ -33,4 +33,7 @@ Thumbs.db
 # Claude Code local session state
 .claude/
 
+# entire.io session state (used in the private upstream, not here)
+.entire/
+
 graphify-out/
