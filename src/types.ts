@@ -56,6 +56,13 @@ export type Asset = {
   trashedAt?: string | null;
   createdAt: string;
   metadataJson?: string | null;
+  // Captured automatically from a dataset-folder sidecar .txt file at import time
+  // (see ingest.zig's folderCandidates) -- never user-edited. Distinct from `note`
+  // (Eagle-import metadata) and from `prompt` (user-entered) below.
+  caption?: string | null;
+  // User-editable AI-generation prompt, edited in the Inspector and persisted via
+  // the set_asset_prompt bridge command -- never populated by ingest.
+  prompt?: string | null;
 };
 
 export type BoardScope =

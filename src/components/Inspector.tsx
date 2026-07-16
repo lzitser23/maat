@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { ExternalLink, FolderOpen, Info, Layers3, Ruler, Sparkles, Tag } from "lucide-react";
 import { assetIcon, assetKindLabel } from "../lib/asset";
 import { revealPath } from "../lib/bridge";
@@ -16,9 +17,22 @@ type InspectorProps = {
   // Immersive (Infinity view) mode collapses the docked inspector's grid column to 0px, so callers
   // there render it floating over the canvas instead -- this switches the outer chrome accordingly.
   floating?: boolean;
+  // Persists the user-entered AI-generation prompt for `assetId` (see PromptEditor below).
+  // Omitted where the Inspector has no board context to save into.
+  onSetAssetPrompt?: (assetId: string, prompt: string) => void;
 };
 
-export function Inspector({ assets, view, scale, status, loading, assetCount, nodeCount, floating = false }: InspectorProps) {
+export function Inspector({
+  assets,
+  view,
+  scale,
+  status,
+  loading,
+  assetCount,
+  nodeCount,
+  floating = false,
+  onSetAssetPrompt,
+}: InspectorProps) {
   const primary = assets[0];
   const Icon = primary ? assetIcon(primary.kind) : Sparkles;
 
@@ -64,7 +78,11 @@ export function Inspector({ assets, view, scale, status, loading, assetCount, no
               {primary.tags.length > 0 && <TokenBlock icon={Tag} label="Tags" values={primary.tags} />}
               {primary.folders.length > 0 && <TokenBlock icon={FolderOpen} label="Folders" values={primary.folders} />}
               {primary.note && <TextBlock label="Note" value={primary.note} />}
+              {primary.caption && <TextBlock label="Caption" value={primary.caption} />}
               {primary.sourceUrl && <Meta label="Source URL" value={primary.sourceUrl} />}
+              {onSetAssetPrompt && (
+                <PromptEditor key={primary.id} asset={primary} onSetAssetPrompt={onSetAssetPrompt} />
+              )}
 
               <Button variant="secondary" className="w-full" onClick={() => revealPath(primary.managedPath)}>
                 <ExternalLink className="h-4 w-4" />
@@ -132,6 +150,35 @@ function TokenBlock({ icon: Icon, label, values }: { icon: Icon; label: string; 
           </span>
         ))}
       </div>
+    </div>
+  );
+}
+
+// Editable AI-generation prompt (distinct from the read-only, import-captured Caption
+// above). Local draft state lets typing feel instant; the value only round-trips through
+// the bridge on blur. Mounted with `key={asset.id}` by the caller so switching the
+// selected asset always remounts with a fresh draft instead of carrying over stale text.
+function PromptEditor({ asset, onSetAssetPrompt }: { asset: Asset; onSetAssetPrompt: (assetId: string, prompt: string) => void }) {
+  const [draft, setDraft] = useState(asset.prompt ?? "");
+
+  useEffect(() => {
+    setDraft(asset.prompt ?? "");
+  }, [asset.id, asset.prompt]);
+
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-[0.14em] text-[var(--muted)]">Prompt</div>
+      <textarea
+        aria-label="Prompt"
+        value={draft}
+        placeholder="Add the generation prompt for this asset…"
+        rows={3}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => {
+          if (draft !== (asset.prompt ?? "")) onSetAssetPrompt(asset.id, draft);
+        }}
+        className="mt-1 w-full resize-none rounded-md border border-[var(--line)] bg-[var(--panel-strong)] p-2 text-sm leading-5 text-[var(--fg)] outline-none focus:ring-1 focus:ring-inset focus:ring-[var(--focus)]"
+      />
     </div>
   );
 }
