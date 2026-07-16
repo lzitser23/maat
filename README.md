@@ -48,7 +48,7 @@ It's built to feel native and instant: a **Zig + SQLite** engine (via the [Nativ
 - **Trash + undo/redo** — soft-delete to Trash, and undo/redo for both canvas layout and trashing (`Ctrl/Cmd+Z` / `Ctrl/Cmd+Shift+Z`).
 - **Search + scopes** — search names, types, tags, folders, notes, and source URLs (`Ctrl/Cmd+K`); filter by All / Inbox / Trash, by import source folder, or by tag.
 - **Auto-arrange** — tidy the current selection or scope into a clean masonry layout without destroying your manual placement.
-- **Native, small, and yours** — a frameless native window with a custom titlebar, dark/light themes, and a single-digit-MB package.
+- **Native, small, and yours** — a frameless native window with a custom titlebar, dark/light themes, and a single ~20 MB portable exe on Windows (frontend and WebView2 loader embedded — no installer, no sibling files).
 
 ---
 
@@ -62,7 +62,7 @@ Tagged versions (`v*`) publish to [**Releases**](https://github.com/lzitser23/ma
 | --- | --- | --- |
 | macOS | `Maat-vX.Y.Z.dmg` | Signed + notarized — open the DMG and drag **Maat** to **Applications** |
 | macOS | `Maat-Native-macos-vX.Y.Z.zip` | The same signed, notarized `.app`, zipped |
-| Windows | `Maat-Native-windows-vX.Y.Z.zip` | Portable — unzip anywhere and run `bin\maat-native.exe` |
+| Windows | `Maat-portable-vX.Y.Z.exe` | Portable single file — download anywhere and double-click; nothing to unzip or install |
 
 ### Download a CI build
 
@@ -70,7 +70,7 @@ Between releases, every merge to `main` builds both platforms via GitHub Actions
 
 | Platform | Asset | Notes |
 | --- | --- | --- |
-| Windows | `Maat-Native-windows` (packaged app directory) | Run `maat-native.exe` inside the package |
+| Windows | `Maat-portable-windows` (single `maat-native.exe`) | Portable — run it from anywhere |
 | macOS | `Maat-Native-macos-notarized` (zipped `.app`) | Signed + notarized — opens like any app |
 
 **Windows:** builds are **unsigned**, so SmartScreen will warn on first run — choose **More info → Run anyway**.
@@ -101,7 +101,7 @@ Maat writes to two separate directories — back up, migrate, or troubleshoot us
 | Path | What's there | Owned by |
 | --- | --- | --- |
 | Windows: `%APPDATA%\MaatNative` · macOS: `~/Library/Application Support/MaatNative` | Your data: the SQLite catalog (boards, tags, notes) and the content-addressed managed asset store. This is what you back up or migrate. | Maat (`src-zig/main.zig`) |
-| Windows: `%LOCALAPPDATA%\com.lzitser.maat-native` (and the macOS equivalent, keyed by the same bundle id) | Window position/size restore state and diagnostic logs. Nothing here is user data — safe to delete any time; Maat just re-centers the window and recreates it. | Native SDK shell |
+| Windows: `%LOCALAPPDATA%\com.lzitser.maat-native` (and the macOS equivalent, keyed by the same bundle id) | Window position/size restore state, diagnostic logs, and (Windows) the WebView2 loader the portable exe stages for itself on launch. Nothing here is user data — safe to delete any time; Maat just re-centers the window and recreates it all. | Native SDK shell + Maat (`src-zig/runner.zig`) |
 
 ---
 
@@ -154,7 +154,7 @@ pnpm test:e2e       # Playwright E2E
 
 # Build + package
 pnpm native:build          # ReleaseFast binary into zig-out/bin/
-pnpm native:package        # package for Windows
+pnpm portable:windows      # Windows: the portable single-file exe (zig-out/bin/maat-native.exe)
 pnpm native:package:macos  # package for macOS (.app bundle)
 ```
 
@@ -172,14 +172,14 @@ maat/
 |-- build.zig     # Native SDK build graph
 |-- tests/        # Playwright end-to-end tests
 |-- public/       # Static assets (favicon / logo)
-`-- .github/      # CI workflow (web checks + Windows/macOS packages; notarization on main; releases on v* tags)
+`-- .github/      # CI workflow (web checks + Windows portable exe + macOS package; notarization on main; releases on v* tags)
 ```
 
 ---
 
 ## Architecture
 
-The React layer owns the canvas and UI state (a single `zustand` store in `src/store.ts`) and talks to Zig through a thin bridge (`src/lib/bridge.ts`, which also ships an in-memory mock backend for browser-only preview) over the Native SDK's `window.zero` JS bridge. Every mutation — importing, moving nodes, trashing, saving a drawing — is a command registered in `src-zig/main.zig`. On the Zig side, `storage.zig` owns the SQLite catalog (boards, sources, assets, board nodes) and `ingest.zig` owns the import pipeline: classify (file / folder / Eagle), hash with SHA-256, copy into content-addressed managed storage, extract metadata, and generate image thumbnails. (3D models are the one kind the engine can't rasterize itself — the webview renders each one offscreen with three.js and persists the PNG back through a `set_asset_thumbnail` command.) There is no cloud dependency — the catalog lives beside the app's data directory, and files are served to the webview by a local file server (`src-zig/server.zig`).
+The React layer owns the canvas and UI state (a single `zustand` store in `src/store.ts`) and talks to Zig through a thin bridge (`src/lib/bridge.ts`, which also ships an in-memory mock backend for browser-only preview) over the Native SDK's `window.zero` JS bridge. Every mutation — importing, moving nodes, trashing, saving a drawing — is a command registered in `src-zig/main.zig`. On the Zig side, `storage.zig` owns the SQLite catalog (boards, sources, assets, board nodes) and `ingest.zig` owns the import pipeline: classify (file / folder / Eagle), hash with SHA-256, copy into content-addressed managed storage, extract metadata, and generate image thumbnails. (3D models are the one kind the engine can't rasterize itself — the webview renders each one offscreen with three.js and persists the PNG back through a `set_asset_thumbnail` command.) There is no cloud dependency — the catalog lives beside the app's data directory, and files are served to the webview by a local file server (`src-zig/server.zig`). On Windows the UI itself ships inside the binary: the built frontend is embedded at compile time and served over loopback by `src-zig/embedded_frontend_server.zig`, which is what makes the release a single portable exe.
 
 ---
 
