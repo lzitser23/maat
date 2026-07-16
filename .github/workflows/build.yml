@@ -12,16 +12,24 @@ on:
   pull_request:
     branches: [main, dev]
 
+# Supersede in-flight runs when the same ref gets a newer push -- but never
+# cancel a tag build mid-notarization (a half-finished release run would need
+# manual archaeology to distinguish from a real failure).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
   web-check:
     name: Web checks
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.15.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -33,12 +41,13 @@ jobs:
   windows:
     name: Windows package
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.15.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -79,7 +88,7 @@ jobs:
       # depends on a real Windows desktop + WebView2 Runtime, not anything
       # GitHub-hosted-specific.
       - run: pnpm run smoke:packaged
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Maat-Native-windows
           path: zig-out/package
@@ -87,17 +96,20 @@ jobs:
   macos:
     name: macOS package
     runs-on: macos-latest
+    # Generous: notarytool --wait depends on Apple's service, which is
+    # usually ~1 min but occasionally queues for much longer.
+    timeout-minutes: 60
     env:
       # The `secrets` context is not allowed in step-level `if:` expressions,
       # so the "are the notarization secrets configured?" check is hoisted
       # into this job-level env flag and the steps test `env.NOTARIZE`.
       NOTARIZE: ${{ secrets.APPLE_ID != '' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.15.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -223,14 +235,14 @@ jobs:
         if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && env.NOTARIZE == 'true' }}
         run: security delete-keychain build.keychain-db || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Maat-Native-macos
           path: zig-out/package
 
       - name: Upload notarized zip
         if: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && env.NOTARIZE == 'true' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Maat-Native-macos-notarized
           path: zig-out/Maat-macos-notarized.zip
@@ -244,10 +256,11 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [web-check, windows, macos]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify tag matches manifest version
         run: |
           set -euo pipefail
@@ -258,7 +271,7 @@ jobs:
             echo "Tag $GITHUB_REF_NAME does not match the manifest version -- bump app.zon/package.json (or fix the tag) and re-tag" >&2
             exit 1
           fi
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
       - name: Assemble release assets

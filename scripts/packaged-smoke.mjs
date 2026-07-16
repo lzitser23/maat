@@ -211,6 +211,24 @@ async function main() {
     if (child?.pid) {
       await runToCompletion("taskkill", ["/PID", String(child.pid), "/T", "/F"]);
     }
+    // On failure, surface the app's own diagnostic logs before the isolated
+    // dir is deleted below -- without this, a launch failure on CI reduces
+    // to the bare "CDP endpoint never came up" symptom with no way to see
+    // why (e.g. which WebView2 environment-creation step failed).
+    if (!pass) {
+      const logsDir = path.join(appDataDir.local, "com.lzitser.maat-native", "Logs");
+      const logNames = await readdir(logsDir).catch(() => []);
+      if (logNames.length === 0) {
+        log(`no diagnostic logs under ${logsDir} -- the app died before the Native SDK logger initialized`);
+      }
+      for (const name of logNames) {
+        const text = await readFile(path.join(logsDir, name), "utf8").catch(() => "");
+        if (!text.trim()) continue;
+        log(`--- diagnostic log: ${name} ---`);
+        console.log(text.trimEnd());
+        log(`--- end: ${name} ---`);
+      }
+    }
     // maxRetries/retryDelay: right after `taskkill`, the just-killed exe can
     // still hold a handle open (sqlite WAL file, log file) for a brief
     // moment on Windows -- an immediate `rm` can hit EBUSY/EPERM and,
