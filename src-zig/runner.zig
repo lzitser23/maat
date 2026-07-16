@@ -408,7 +408,59 @@ fn runLinux(app: native_sdk.App, options: RunOptions, init: std.process.Init) !v
     try runtime.run(app);
 }
 
+// The vendored WebView2 loader, compiled straight into the exe. The SDK's
+// Windows host loads it with a bare `LoadLibraryW(L"WebView2Loader.dll")`
+// (webView2Factory in @native-sdk/cli's webview2_host.cpp, still true as of
+// 0.4.3), which historically forced the DLL to ship as a sibling file next
+// to the exe -- see stageWebView2Loader below for how the embedded copy
+// satisfies that same call without any sibling file, which is what lets the
+// Windows artifact be a single portable exe.
+const webview2_loader_dll = @embedFile("vendor/windows/WebView2Loader.dll");
+
+extern "kernel32" fn SetDllDirectoryW(path: ?[*:0]const u16) callconv(.c) c_int;
+
+/// Extracts the embedded WebView2Loader.dll under the SDK's own per-app
+/// %LOCALAPPDATA% directory (the disposable one -- window state and logs
+/// live there too, and the README documents it as safe to delete) and adds
+/// that directory to the process DLL search path via SetDllDirectoryW. The
+/// SetDllDirectoryW target is searched right after the application
+/// directory in the default LoadLibraryW search order, so the SDK's bare,
+/// unmodified `LoadLibraryW(L"WebView2Loader.dll")` finds the staged copy
+/// there. Must run before the platform init that creates the webview.
+///
+/// The write is skipped when a byte-identical copy is already staged (the
+/// common every-launch case after the first run, and after every launch of
+/// the same build); a stale copy from an older build gets overwritten
+/// because its bytes no longer match. Best-effort throughout: on any
+/// failure the search path is left untouched and the app falls back to
+/// whatever WebView2Loader.dll is otherwise discoverable -- the same
+/// blank-shell failure mode a genuinely missing loader always had, still
+/// diagnosable through the SDK's log (webview.load with no webview ready).
+fn stageWebView2Loader(io: std.Io, allocator: std.mem.Allocator, env_map: *std.process.Environ.Map, bundle_id: []const u8) void {
+    const base = env_map.get("LOCALAPPDATA") orelse return;
+    const dir = std.fs.path.join(allocator, &.{ base, bundle_id, "bin" }) catch return;
+    defer allocator.free(dir);
+    std.Io.Dir.cwd().createDirPath(io, dir) catch return;
+
+    const dll_path = std.fs.path.join(allocator, &.{ dir, "WebView2Loader.dll" }) catch return;
+    defer allocator.free(dll_path);
+
+    const already_staged = blk: {
+        const existing = std.Io.Dir.cwd().readFileAlloc(io, dll_path, allocator, .limited(4 * 1024 * 1024)) catch break :blk false;
+        defer allocator.free(existing);
+        break :blk std.mem.eql(u8, existing, webview2_loader_dll);
+    };
+    if (!already_staged) {
+        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dll_path, .data = webview2_loader_dll }) catch return;
+    }
+
+    const wide_dir = std.unicode.utf8ToUtf16LeAllocZ(allocator, dir) catch return;
+    defer allocator.free(wide_dir);
+    _ = SetDllDirectoryW(wide_dir.ptr);
+}
+
 fn runWindows(app: native_sdk.App, options: RunOptions, init: std.process.Init) !void {
+    stageWebView2Loader(init.io, std.heap.page_allocator, init.environ_map, options.bundle_id);
     var buffers: StateBuffers = undefined;
     var app_info = options.appInfo(&buffers);
     const store = prepareStateStore(init.io, init.environ_map, &app_info, &buffers);

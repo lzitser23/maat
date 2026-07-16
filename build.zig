@@ -88,6 +88,19 @@ pub fn build(b: *std.Build) void {
     app_mod.addImport("native_sdk", native_sdk_mod);
     app_mod.addImport("runner", runner_mod);
 
+    // The frontend build, compiled straight into the binary (one @embedFile
+    // per dist/ file) and served back to the webview by
+    // src-zig/embedded_frontend_server.zig -- what makes the Windows
+    // artifact a single portable exe with no dist/ beside it. Wired on
+    // every platform because main.zig imports the server module
+    // unconditionally, but only Windows exe builds ever analyze the
+    // embedded bytes (main.zig reaches the server behind a comptime
+    // windows gate; macOS keeps the SDK's on-disk asset origin and its
+    // .app packaging unchanged).
+    const embedded_frontend_server_mod = localModule(b, target, optimize, "src-zig/embedded_frontend_server.zig");
+    embedded_frontend_server_mod.addImport("embedded_frontend", embeddedFrontendModule(b, target, optimize));
+    app_mod.addImport("embedded_frontend_server", embedded_frontend_server_mod);
+
     // Vendored C dependencies (see src-zig/vendor/): sqlite3 for the
     // catalog database, stb_image/stb_image_write/stb_image_resize2 for
     // the ingest pipeline's thumbnailing. Wired here rather than via
@@ -112,21 +125,16 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     // Windows/system web_engine loads WebView2 via LoadLibraryW("WebView2Loader.dll")
-    // with no explicit search path (src/platform/windows/webview2_host.cpp), so the
-    // DLL must sit next to the exe -- it is not provided by the WebView2 Runtime
-    // install, only by the Microsoft.Web.WebView2 NuGet redistributable. Vendored
-    // here (src-zig/vendor/windows/) the same way sqlite3.c/stb_impl.c are vendored
-    // above, and installed into zig-out/bin as part of the default step so it's
-    // present for `native dev`/`native build` alike (neither goes through the `run`
-    // step). Without it, WebView2 never spawns and the window is a blank white shell.
-    if (selected_platform == .windows and web_engine == .system) {
-        const webview2_loader = b.addInstallFileWithDir(
-            b.path("src-zig/vendor/windows/WebView2Loader.dll"),
-            .bin,
-            "WebView2Loader.dll",
-        );
-        b.getInstallStep().dependOn(&webview2_loader.step);
-    }
+    // with no explicit search path (src/platform/windows/webview2_host.cpp) -- the
+    // DLL is not provided by the WebView2 Runtime install, only by the
+    // Microsoft.Web.WebView2 NuGet redistributable. It used to be installed into
+    // zig-out/bin beside the exe here; the vendored copy
+    // (src-zig/vendor/windows/WebView2Loader.dll) is now @embedFile'd into the
+    // binary instead and staged at runtime before webview creation (runner.zig's
+    // stageWebView2Loader: extract under %LOCALAPPDATA%, SetDllDirectoryW), so
+    // the bare LoadLibraryW call finds it without any file shipped next to the
+    // exe. Without that staging, WebView2 never spawns and the window is a blank
+    // white shell.
 
     // Frontend lives at the repo root (src/, index.html, vite.config.ts,
     // package.json) -- not in a frontend/ subdir -- so these steps run
@@ -285,6 +293,85 @@ fn npmGlobalNativeSdkPath(b: *std.Build) ?[]const u8 {
     const sentinel = b.pathJoin(&.{ candidate, "src", "root.zig" });
     std.Io.Dir.accessAbsolute(b.graph.io, sentinel, .{}) catch return null;
     return candidate;
+}
+
+// Walks dist/ at configure time and generates a Zig module embedding every
+// file's bytes via @embedFile, keyed by its dist-relative path in
+// forward-slash form -- the HTTP path src-zig/embedded_frontend_server.zig
+// matches requests against. Constraints that shape where the generated file
+// lives:
+//
+//   - @embedFile is sandboxed to the importing module's package path and
+//     rejects any path containing ".." outright (regardless of what it
+//     resolves to), so the generated file must sit somewhere dist/ is
+//     reachable as a plain subpath. A b.addWriteFiles() output lands in its
+//     own package under .zig-cache -- outside the sandbox -- and src-zig/
+//     is a *sibling* of dist/, so neither works: the file goes at the repo
+//     root (gitignored) and embeds "dist/<file>".
+//
+//   - A missing or empty dist/ (fresh checkout, CI before `pnpm build`)
+//     must not fail `zig build test`: the windows CI job runs tests before
+//     building the frontend, and nothing in the test binary needs the
+//     embedded bytes. So instead of panicking here at configure time, the
+//     generated module carries a decl-level @compileError -- Zig's lazy
+//     analysis only fires it from builds that actually reference `entries`
+//     (the Windows exe, via main.zig -> embedded_frontend_server), turning
+//     "shipped a frontend-less exe" into a loud, actionable compile failure
+//     while leaving tests and macOS builds untouched.
+fn embeddedFrontendModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    const build_root = b.build_root.path orelse @panic("build root has no absolute path -- cannot locate dist/ to embed");
+    const dist_abs = b.pathJoin(&.{ build_root, "dist" });
+
+    var source = std.array_list.Managed(u8).init(b.allocator);
+    source.appendSlice(
+        \\// Generated by build.zig's embeddedFrontendModule() on every configure --
+        \\// do not edit, do not commit (gitignored).
+        \\pub const Entry = struct { path: []const u8, data: []const u8 };
+        \\
+    ) catch @panic("OOM");
+
+    var file_count: usize = 0;
+    var entries_body = std.array_list.Managed(u8).init(b.allocator);
+    if (std.Io.Dir.cwd().openDir(b.graph.io, dist_abs, .{ .iterate = true })) |dir_const| {
+        var dir = dir_const;
+        defer dir.close(b.graph.io);
+        var walker = dir.walk(b.allocator) catch @panic("OOM");
+        defer walker.deinit();
+        while (walker.next(b.graph.io) catch @panic("failed to walk dist/ while generating the embedded frontend module")) |entry| {
+            if (entry.kind != .file) continue;
+            file_count += 1;
+            const url_path = b.allocator.dupe(u8, entry.path) catch @panic("OOM");
+            for (url_path) |*ch| {
+                if (ch.* == '\\') ch.* = '/';
+            }
+            entries_body.appendSlice(b.fmt("    .{{ .path = \"{s}\", .data = @embedFile(\"dist/{s}\") }},\n", .{ url_path, url_path })) catch @panic("OOM");
+        }
+    } else |_| {
+        // Missing dist/ falls through to the same compileError stub as an
+        // empty one -- see the function comment for why this is not a
+        // configure-time panic.
+    }
+
+    if (file_count == 0) {
+        source.appendSlice(
+            \\pub const entries = @compileError("dist/ is missing or empty -- run `pnpm build` first; the Windows portable exe embeds the built frontend");
+            \\
+        ) catch @panic("OOM");
+    } else {
+        source.appendSlice("pub const entries = [_]Entry{\n") catch @panic("OOM");
+        source.appendSlice(entries_body.items) catch @panic("OOM");
+        source.appendSlice("};\n") catch @panic("OOM");
+    }
+
+    const generated_path = b.pathJoin(&.{ build_root, "embedded_frontend_generated.zig" });
+    std.Io.Dir.cwd().writeFile(b.graph.io, .{ .sub_path = generated_path, .data = source.items }) catch |err| {
+        std.debug.panic("failed to write the generated embedded-frontend module to {s}: {t}", .{ generated_path, err });
+    };
+    return b.createModule(.{
+        .root_source_file = b.path("embedded_frontend_generated.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 }
 
 fn localModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, path: []const u8) *std.Build.Module {

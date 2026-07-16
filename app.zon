@@ -20,7 +20,11 @@
     },
     .security = .{
         .navigation = .{
-            .allowed_origins = .{ "zero://app", "zero://inline", "http://127.0.0.1:1421", "http://127.0.0.1:1499" },
+            // The four 478xx entries mirror src-zig/embedded_frontend_server.zig's
+            // static port set (the loopback server the portable Windows exe
+            // serves its embedded frontend from) -- keep the two lists in
+            // sync; src-zig/main.zig's app_origins derives from the same set.
+            .allowed_origins = .{ "zero://app", "zero://inline", "http://127.0.0.1:1421", "http://127.0.0.1:1499", "http://127.0.0.1:47821", "http://127.0.0.1:47822", "http://127.0.0.1:47823", "http://127.0.0.1:47824" },
             .external_links = .{ .action = "deny" },
         },
     },

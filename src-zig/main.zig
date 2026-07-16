@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const runner = @import("runner");
 const native_sdk = @import("native_sdk");
 const server_mod = @import("server.zig");
+const embedded_frontend_server_mod = @import("embedded_frontend_server");
 const storage_mod = @import("storage.zig");
 const ingest_mod = @import("ingest.zig");
 
@@ -16,12 +17,19 @@ const platform = native_sdk.platform;
 // MIGRATION-BRIEF.md section 9), and the two dev-server ports in play
 // during this migration (the app's normal configured Vite port, 1421,
 // and the isolated port used for shell-acceptance testing, 1499).
+// This same array also backs the webview navigation allowlist (see the
+// `.security` block handed to runWithOptions below), and both policies are
+// comptime-resolved -- which is why the embedded frontend server's origins
+// are appended here from its static port set (embedded_frontend_server.zig
+// exports them comptime-formatted) rather than discovered at runtime: an
+// OS-assigned port could never be admitted to either policy. Mirror any
+// port-set change into app.zon's `.security.navigation.allowed_origins`.
 const app_origins = [_][]const u8{
     "zero://app",
     "zero://inline",
     "http://127.0.0.1:1421",
     "http://127.0.0.1:1499",
-};
+} ++ embedded_frontend_server_mod.origins;
 
 // 17 domain commands (COMMAND-CONTRACT.md's original 14, ported 1:1 with
 // the deliberate delete_board cascade fix from INTERFACE.md item 1, plus
@@ -256,6 +264,17 @@ const App = struct {
     storage: ?storage_mod.Storage = null,
     runtime: ?*native_sdk.Runtime = null,
     file_server: ?*server_mod.Server = null,
+    /// Windows-only (null on every other platform, and null in the one
+    /// degraded Windows case `start` tolerates -- see there): serves the
+    /// dist/ build embedded in the exe, so the shipped binary needs no
+    /// frontend files beside it. See embedded_frontend_server.zig.
+    embedded_frontend_server: ?*embedded_frontend_server_mod.Server = null,
+    /// Backing storage for the URL slice `source()` hands the runtime --
+    /// WebViewSource.url() just wraps the slice (the runtime copies it
+    /// later, in flow.zig's copyLoadedSource), so formatting into a stack
+    /// local inside source() would return a dangling pointer. This App
+    /// instance is process-lifetime, so a field is always safe.
+    embedded_frontend_url_buf: [64]u8 = undefined,
     jobs: JobRegistry = .{},
     handlers: [handler_count]bridge.Handler = undefined,
     policies: [handler_count]bridge.CommandPolicy = undefined,
@@ -271,9 +290,35 @@ const App = struct {
         };
     }
 
+    /// The managed dev-server URL, when `native dev` is driving this run.
+    /// Same env var and same empty-means-unset rule as the SDK's own
+    /// frontend.sourceFromEnv (frontend.Config.dev_url_env's default).
+    fn devFrontendUrl(self: *@This()) ?[]const u8 {
+        const url = self.env_map.get("NATIVE_SDK_FRONTEND_URL") orelse return null;
+        return if (url.len > 0) url else null;
+    }
+
     fn source(context: *anyopaque) anyerror!native_sdk.WebViewSource {
         const self: *@This() = @ptrCast(@alignCast(context));
-        return native_sdk.frontend.sourceFromEnv(self.env_map, .{
+        // Dev mode first, on every platform: `native dev` exports the Vite
+        // URL and hot-reload etc. all hang off navigating there -- exactly
+        // what frontend.sourceFromEnv did for every run before the
+        // embedded-frontend path below existed.
+        if (self.devFrontendUrl()) |url| return native_sdk.WebViewSource.url(url);
+        // Windows production: the exe's own embedded dist/, served by the
+        // loopback server `start` brought up (the runtime always calls the
+        // start hook before it loads the startup window's webview -- see
+        // flow.zig's .app_start handling), so the shipped binary needs no
+        // dist/ directory beside it.
+        if (builtin.os.tag == .windows) {
+            const frontend_server = self.embedded_frontend_server orelse return error.EmbeddedFrontendUnavailable;
+            const url = std.fmt.bufPrint(&self.embedded_frontend_url_buf, "http://127.0.0.1:{d}/", .{frontend_server.port}) catch unreachable;
+            return native_sdk.WebViewSource.url(url);
+        }
+        // macOS (and anything else): unchanged -- the SDK's on-disk asset
+        // origin, resolved against the .app bundle's Resources/dist by the
+        // packaged app (see scripts/package-fixup.mjs's macOS notes).
+        return native_sdk.frontend.productionSource(.{
             .dist = "dist",
             .entry = "index.html",
         });
@@ -282,6 +327,18 @@ const App = struct {
     fn start(context: *anyopaque, runtime: *native_sdk.Runtime) anyerror!void {
         const self: *@This() = @ptrCast(@alignCast(context));
         self.runtime = runtime;
+        // Must come up before `source` runs (see the ordering note there).
+        // Failure to bind any port of the static set is fatal only when
+        // the webview will actually be sourced from this server: a dev run
+        // navigates to the Vite URL instead, so hitting the concurrent-
+        // instance ceiling during development must not take `native dev`
+        // down with it.
+        if (builtin.os.tag == .windows) {
+            self.embedded_frontend_server = embedded_frontend_server_mod.Server.start() catch |err| blk: {
+                if (self.devFrontendUrl() == null) return err;
+                break :blk null;
+            };
+        }
         self.file_server = try server_mod.Server.start(self.allocator, self.storage_root);
         self.storage = try storage_mod.Storage.open(self.allocator, self.storage_root);
     }
@@ -1552,6 +1609,12 @@ pub fn main(init: std.process.Init) !void {
 test {
     _ = @import("ingest.zig");
     _ = @import("storage.zig");
+    // Only the platform-neutral request-path/mime helpers carry tests in
+    // there; nothing test-reachable touches the embedded `entries`, so
+    // this stays green on a fresh checkout where dist/ hasn't been built
+    // (the generated module is then just a decl-level @compileError that
+    // lazy analysis never fires -- see build.zig's embeddedFrontendModule).
+    _ = @import("embedded_frontend_server");
 }
 
 test "revealPath's JSON parsing round-trips a Windows path with backslashes and an embedded quote" {
