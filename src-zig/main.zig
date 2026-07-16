@@ -31,15 +31,16 @@ const app_origins = [_][]const u8{
     "http://127.0.0.1:1499",
 } ++ embedded_frontend_server_mod.origins;
 
-// 17 domain commands (COMMAND-CONTRACT.md's original 14, ported 1:1 with
+// 18 domain commands (COMMAND-CONTRACT.md's original 14, ported 1:1 with
 // the deliberate delete_board cascade fix from INTERFACE.md item 1, plus
 // `load_board_page` and `list_boards_state` -- issue #4's bounded-response
 // board pagination, plus `set_asset_thumbnail` -- webview-rendered previews
-// for kinds the engine can't decode, e.g. 3D models) onto the Storage/ingest
+// for kinds the engine can't decode, e.g. 3D models, plus `set_asset_prompt`
+// -- the user-editable AI-generation prompt field) onto the Storage/ingest
 // layers, plus 13 shell commands (window chrome, dialogs, the local file
 // server, the import job registry, and `reveal_path`, a pure OS side effect
 // with no storage involvement).
-const domain_handler_count = 17;
+const domain_handler_count = 18;
 const shell_handler_count = 13;
 const handler_count = domain_handler_count + shell_handler_count;
 
@@ -404,6 +405,8 @@ const App = struct {
         i += 1;
         self.handlers[i] = .{ .name = "set_asset_thumbnail", .context = self, .invoke_fn = setAssetThumbnail };
         i += 1;
+        self.handlers[i] = .{ .name = "set_asset_prompt", .context = self, .invoke_fn = setAssetPrompt };
+        i += 1;
         self.handlers[i] = .{ .name = "reveal_path", .context = self, .invoke_fn = revealPath };
         i += 1;
         self.handlers[i] = .{ .name = "window_minimize", .context = self, .invoke_fn = windowMinimize };
@@ -740,6 +743,21 @@ fn setAssetThumbnail(context: *anyopaque, invocation: bridge.Invocation, output:
     const asset = storage.setAssetThumbnail(a, args.boardId, args.assetId, args.uploadPath) catch |err| return mapStorageError(err);
     const json = try asset.toJson(a);
     return copyJsonOrSpill(self, output, json);
+}
+
+fn setAssetPrompt(context: *anyopaque, invocation: bridge.Invocation, output: []u8) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(context));
+    const storage = try self.storagePtr();
+
+    var arena = std.heap.ArenaAllocator.init(self.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const Args = struct { boardId: []const u8, assetId: []const u8, prompt: []const u8 };
+    const args = try parsePayload(Args, a, invocation.request.payload);
+
+    const asset = storage.setAssetPrompt(a, args.boardId, args.assetId, args.prompt) catch |err| return mapStorageError(err);
+    return copyJsonOrSpill(self, output, try asset.toJson(a));
 }
 
 fn purgeAssets(context: *anyopaque, invocation: bridge.Invocation, output: []u8) anyerror![]const u8 {

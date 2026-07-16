@@ -703,3 +703,217 @@ test "loadBoardPage rejects an unknown board id" {
 
     try testing.expectError(error.NotFound, store.loadBoardPage(allocator, "does-not-exist", null));
 }
+
+// ---------------------------------------------------------------------------
+// AI-dataset feature: sidecar `caption` (ingest-populated) + user-editable
+// `prompt` (set_asset_prompt) - both new nullable columns added the same way
+// note/source_url/trashed_at were (see migrateAssets).
+// ---------------------------------------------------------------------------
+
+test "insertAsset persists a caption and setAssetPrompt round-trips a prompt" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try absPath(allocator, tmp.dir, io);
+    defer allocator.free(tmp_root);
+
+    const root_path = try std.fmt.allocPrint(allocator, "{s}/data", .{tmp_root});
+    defer allocator.free(root_path);
+    const original_path = try std.fmt.allocPrint(allocator, "{s}/originals/pic.png", .{tmp_root});
+    defer allocator.free(original_path);
+    try writeAbsoluteFile(io, original_path, "pixels");
+
+    var store = try Storage.open(allocator, root_path);
+    defer store.close();
+
+    const boards = try store.listBoards(allocator);
+    defer {
+        for (boards) |b| b.deinit(allocator);
+        allocator.free(boards);
+    }
+    const board = boards[0];
+
+    const source = try store.insertSource(allocator, board.id, "folder", original_path, "managed");
+    defer source.deinit(allocator);
+
+    const hash = "captionpromptroundtrip0000000001";
+    const managed_path = try writeManagedAsset(allocator, io, board.path, hash, "pixels");
+    defer allocator.free(managed_path);
+
+    var asset = blankAsset(board.id, source.id, hash, managed_path, original_path);
+    asset.caption = "a cat sitting on a windowsill";
+    try testing.expect(try store.insertAsset(allocator, asset));
+
+    // Caption round-trips through a plain load, and prompt starts unset.
+    {
+        const view = try store.loadBoard(allocator, board.id);
+        defer view.deinit(allocator);
+        try testing.expectEqual(@as(usize, 1), view.assets.len);
+        try testing.expectEqualStrings("a cat sitting on a windowsill", view.assets[0].caption.?);
+        try testing.expectEqual(@as(?[]const u8, null), view.assets[0].prompt);
+    }
+
+    // Setting the prompt persists it and leaves the caption untouched.
+    const updated = try store.setAssetPrompt(allocator, board.id, hash, "a photorealistic cat, warm light, 35mm");
+    defer updated.deinit(allocator);
+    try testing.expectEqualStrings("a photorealistic cat, warm light, 35mm", updated.prompt.?);
+    try testing.expectEqualStrings("a cat sitting on a windowsill", updated.caption.?);
+
+    // Persisted, not just returned in-memory: reload from a fresh query.
+    {
+        const view = try store.loadBoard(allocator, board.id);
+        defer view.deinit(allocator);
+        try testing.expectEqualStrings("a photorealistic cat, warm light, 35mm", view.assets[0].prompt.?);
+        try testing.expectEqualStrings("a cat sitting on a windowsill", view.assets[0].caption.?);
+    }
+}
+
+test "setAssetPrompt on an unknown asset id returns NotFound" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try absPath(allocator, tmp.dir, io);
+    defer allocator.free(tmp_root);
+    const root_path = try std.fmt.allocPrint(allocator, "{s}/data", .{tmp_root});
+    defer allocator.free(root_path);
+
+    var store = try Storage.open(allocator, root_path);
+    defer store.close();
+
+    const boards = try store.listBoards(allocator);
+    defer {
+        for (boards) |b| b.deinit(allocator);
+        allocator.free(boards);
+    }
+    const board = boards[0];
+
+    try testing.expectError(error.NotFound, store.setAssetPrompt(allocator, board.id, "does-not-exist", "a prompt"));
+}
+
+// Raw sqlite3 access (independent of Storage's own, non-`pub`, `execSql`) so
+// this test can rewrite `catalog.sqlite3`'s `assets` table into the shape it
+// had before `caption`/`prompt` existed, to prove `migrateAssets`'s ALTER
+// TABLE ADD COLUMN path (not just CREATE TABLE IF NOT EXISTS, which every
+// other test above exercises against a brand-new file) actually runs against
+// a pre-existing catalog. Self-contained, same vendored header storage.zig
+// itself uses -- storage.zig's own module doc comment already establishes
+// that pattern (`@cImport` of `sqlite3.h` is the module's only dependency).
+const raw_sqlite = @cImport({
+    @cInclude("sqlite3.h");
+});
+
+fn execRawSql(db_path_z: [:0]const u8, sql_z: [:0]const u8) !void {
+    var db: ?*raw_sqlite.sqlite3 = null;
+    if (raw_sqlite.sqlite3_open_v2(db_path_z.ptr, &db, raw_sqlite.SQLITE_OPEN_READWRITE, null) != raw_sqlite.SQLITE_OK) {
+        if (db) |d| _ = raw_sqlite.sqlite3_close(d);
+        return error.SqliteError;
+    }
+    defer _ = raw_sqlite.sqlite3_close(db.?);
+
+    var errmsg: [*c]u8 = null;
+    if (raw_sqlite.sqlite3_exec(db.?, sql_z.ptr, null, null, &errmsg) != raw_sqlite.SQLITE_OK) {
+        if (errmsg != null) raw_sqlite.sqlite3_free(errmsg);
+        return error.SqliteError;
+    }
+}
+
+// Proves `caption`/`prompt` reach an assets table created BEFORE this feature
+// existed (no CREATE TABLE column for them) the same way note/source_url/
+// trashed_at already do: via `migrateAssets`'s ALTER TABLE ADD COLUMN path,
+// not just the fresh-DB CREATE TABLE path every other test above exercises.
+test "migrateAssets adds caption/prompt columns to a pre-existing assets table" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try absPath(allocator, tmp.dir, io);
+    defer allocator.free(tmp_root);
+    const root_path = try std.fmt.allocPrint(allocator, "{s}/data", .{tmp_root});
+    defer allocator.free(root_path);
+    const db_path = try std.fs.path.joinZ(allocator, &.{ root_path, "catalog.sqlite3" });
+    defer allocator.free(db_path);
+
+    {
+        // First open: creates catalog.sqlite3 with the CURRENT schema
+        // (caption/prompt included, via CREATE TABLE). Rebuilding `assets`
+        // right back out to its pre-this-feature shape below simulates "an
+        // old catalog file from before this feature shipped" without having
+        // to hand-maintain a whole second copy of the earlier schema.
+        var store = try Storage.open(allocator, root_path);
+        store.close();
+    }
+
+    // Plain DROP + recreate (not RENAME): no asset rows exist yet at this
+    // point (insertSource/insertAsset below run only AFTER the second open),
+    // and critically, an `ALTER TABLE ... RENAME` here would make sqlite
+    // silently rewrite `board_nodes`'s `REFERENCES assets(id)` clause to
+    // point at the renamed-away table -- a later `foreign key mismatch`
+    // prepare-time error the moment anything tries to insert a board_nodes
+    // row, since the real "assets" table would no longer be what
+    // board_nodes's schema text says it references. Recreating the table
+    // under its own unchanged name avoids that entirely.
+    try execRawSql(db_path,
+        \\DROP TABLE assets;
+        \\CREATE TABLE assets (
+        \\    id TEXT PRIMARY KEY,
+        \\    library_id TEXT NOT NULL,
+        \\    source_id TEXT,
+        \\    name TEXT NOT NULL,
+        \\    original_path TEXT NOT NULL,
+        \\    managed_path TEXT NOT NULL,
+        \\    mime TEXT NOT NULL,
+        \\    extension TEXT NOT NULL,
+        \\    size INTEGER NOT NULL,
+        \\    hash TEXT NOT NULL,
+        \\    width INTEGER,
+        \\    height INTEGER,
+        \\    kind TEXT NOT NULL,
+        \\    preview_status TEXT NOT NULL,
+        \\    thumbnail_path TEXT,
+        \\    tags_json TEXT NOT NULL DEFAULT '[]',
+        \\    folders_json TEXT NOT NULL DEFAULT '[]',
+        \\    note TEXT,
+        \\    source_url TEXT,
+        \\    trashed_at TEXT,
+        \\    created_at TEXT NOT NULL,
+        \\    metadata_json TEXT
+        \\);
+    );
+
+    // Second open: runInit's migrateAssets must see the pre-existing (older-
+    // shaped) assets table and ALTER TABLE ADD COLUMN both caption and prompt
+    // in, rather than assuming CREATE TABLE IF NOT EXISTS already put them
+    // there (it's a no-op against an existing table of the same name).
+    var store = try Storage.open(allocator, root_path);
+    defer store.close();
+
+    const boards = try store.listBoards(allocator);
+    defer {
+        for (boards) |b| b.deinit(allocator);
+        allocator.free(boards);
+    }
+    const board = boards[0];
+
+    const source = try store.insertSource(allocator, board.id, "folder", "irrelevant", "managed");
+    defer source.deinit(allocator);
+
+    const original_path = try std.fmt.allocPrint(allocator, "{s}/pic.png", .{tmp_root});
+    defer allocator.free(original_path);
+    const hash = "migratedassetcaptionprompt00001";
+    const managed_path = try writeManagedAsset(allocator, io, board.path, hash, "pixels");
+    defer allocator.free(managed_path);
+
+    var asset = blankAsset(board.id, source.id, hash, managed_path, original_path);
+    asset.caption = "migrated caption";
+    try testing.expect(try store.insertAsset(allocator, asset));
+
+    const updated = try store.setAssetPrompt(allocator, board.id, hash, "migrated prompt");
+    defer updated.deinit(allocator);
+    try testing.expectEqualStrings("migrated caption", updated.caption.?);
+    try testing.expectEqualStrings("migrated prompt", updated.prompt.?);
+}
