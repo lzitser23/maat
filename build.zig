@@ -538,8 +538,82 @@ fn patchedWebview2HostSource(b: *std.Build, native_sdk_path: []const u8) std.Bui
     else
         @panic("webview2_host.cpp no longer contains the expected ptMinTrackSize text right after the WM_GETMINMAXINFO patch ran -- the SDK likely changed; update or drop this build-time patch in build.zig");
 
+    // Chromeless-maximized top-gap patch. This one is ours, not an
+    // upstream SDK fix -- confirmed absent from @native-sdk/cli 0.5.1 too
+    // (diffed webview2_host.cpp against a 0.5.1 tarball; the only Windows
+    // chrome-related change in that release is a standard/hidden-titlebar
+    // dark-mode caption color fix that explicitly excludes chromeless
+    // windows, see applyStandardTitlebarColorScheme's own guard). Root
+    // cause: chromeless (WS_POPUP + WS_THICKFRAME, no WS_CAPTION) windows
+    // get NO custom WM_NCCALCSIZE handling above -- only the hidden-
+    // titlebar style does -- so the entire non-client calculation is left
+    // to DefWindowProc, which keeps reserving its normal resize-frame
+    // thickness at the top even though there is no caption. That
+    // reservation is invisible in the RESTORED window: createNativeWindow
+    // already grows the outer window past the requested content size by
+    // exactly that thickness (adjustWindowRectForDpi), so subtracting it
+    // back out in WM_NCCALCSIZE still lands the client rect at the full
+    // requested content area, border reserved harmlessly outside it. But
+    // the WM_GETMINMAXINFO patch just above pins a MAXIMIZED chromeless
+    // window's outer rect to the monitor's work area EXACTLY (deliberately,
+    // so it never bleeds off-screen the way a normal WS_OVERLAPPEDWINDOW
+    // does on maximize) -- there is no longer any slack for DefWindowProc's
+    // frame thickness to disappear into, so the same subtraction now carves
+    // a real, visible gap out of the TOP of the client rect. WebView2 only
+    // ever fills the client rect it is told about, so the gap shows
+    // through to the plain white default window-class background brush
+    // (registerClass's COLOR_WINDOW+1) as a white bar the full width of
+    // the window, sitting above this app's own dark custom titlebar.
+    // Fixed the same way the hidden-titlebar style already reclaims its
+    // caption band above: intercept WM_NCCALCSIZE, let DefWindowProc
+    // compute its normal frame first, then hand the top back to its
+    // pre-DefWindowProc value. Gated on IsZoomed so the restored window
+    // (which has no gap to fix) keeps DefWindowProc's default top-edge
+    // non-client area for the system's own HTTOP resize hit-testing (see
+    // the WM_NCHITTEST block right below, which still needs a real
+    // left/right/bottom non-client area for edge-drag resizing and is
+    // left untouched here). Runs before that WM_NCHITTEST block so both
+    // sit together as this app's chromeless-specific handling.
+    const chromeless_topgap_needle =
+        \\    /* Chromeless windows (WS_POPUP, no caption): DefWindowProc owns the
+        \\     * resize frame when one exists; the app's window-drag regions are
+        \\     * the only caption there is, so a client-area hit inside one
+        \\     * answers HTCAPTION — the system move loop and the right-click
+        \\     * system menu for free, exactly like the hidden-titlebar shape. */
+        \\    if (message == WM_NCHITTEST) {
+        \\        Window *chromeless_window = chromelessWindowForHwnd(host, hwnd);
+    ;
+    const chromeless_topgap_replacement =
+        \\    /* Chromeless-maximized top-gap fix -- maat-native local patch, see
+        \\     * patchedWebview2HostSource in build.zig for why upstream has none. */
+        \\    if (message == WM_NCCALCSIZE && wparam) {
+        \\        Window *chromeless_calc_window = chromelessWindowForHwnd(host, hwnd);
+        \\        if (chromeless_calc_window && IsZoomed(hwnd)) {
+        \\            NCCALCSIZE_PARAMS *params = reinterpret_cast<NCCALCSIZE_PARAMS *>(lparam);
+        \\            const LONG original_top = params->rgrc[0].top;
+        \\            const LRESULT def_result = DefWindowProcW(hwnd, WM_NCCALCSIZE, wparam, lparam);
+        \\            if (def_result != 0) return def_result;
+        \\            params->rgrc[0].top = original_top;
+        \\            return 0;
+        \\        }
+        \\    }
+        \\    /* Chromeless windows (WS_POPUP, no caption): DefWindowProc owns the
+        \\     * resize frame when one exists; the app's window-drag regions are
+        \\     * the only caption there is, so a client-area hit inside one
+        \\     * answers HTCAPTION — the system move loop and the right-click
+        \\     * system menu for free, exactly like the hidden-titlebar shape. */
+        \\    if (message == WM_NCHITTEST) {
+        \\        Window *chromeless_window = chromelessWindowForHwnd(host, hwnd);
+    ;
+    const chromeless_topgap_patched: []const u8 = if (std.mem.indexOf(u8, patched, chromeless_topgap_needle) != null)
+        std.mem.replaceOwned(u8, b.allocator, patched, chromeless_topgap_needle, chromeless_topgap_replacement) catch @panic("OOM")
+    else if (std.mem.indexOf(u8, patched, chromeless_topgap_replacement) != null)
+        patched
+    else
+        @panic("webview2_host.cpp no longer contains the expected chromeless WM_NCHITTEST text -- the SDK likely changed; update or drop this build-time patch in build.zig");
+
     const write_files = b.addWriteFiles();
-    return write_files.add("webview2_host_patched.cpp", patched);
+    return write_files.add("webview2_host_patched.cpp", chromeless_topgap_patched);
 }
 
 fn nativeSdkModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, native_sdk_path: []const u8) *std.Build.Module {
