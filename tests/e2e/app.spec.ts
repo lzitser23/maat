@@ -430,17 +430,21 @@ test("Inspector shows a Caption section for an asset that has one, and omits it 
   await expect(page.getByText("Caption", { exact: true })).toBeVisible();
   await expect(page.getByText("A warm-toned palette swatch captured from a desktop wallpaper.")).toBeVisible();
 
-  // Clear the current spotlight first -- clicking straight through to a
-  // different card while one is already spotlighted (and thus enlarged,
-  // overlapping other cards' original layout positions) would just re-hit
-  // the still-spotlighted card instead of switching to the new one.
-  const canvas = await page.getByTestId("maat-canvas").boundingBox();
-  expect(canvas).not.toBeNull();
-  await page.mouse.click(canvas!.x + canvas!.width - 24, canvas!.y + 24);
+  // Clear the current spotlight via a scope click, not a canvas-corner
+  // click -- the spotlighted card is enlarged and can cover any "empty"
+  // corner (especially once the docked Inspector narrows the canvas), so a
+  // coordinate click is not guaranteed to land on background. The sibling
+  // Prompt test below documents the same choice.
+  await page.getByRole("button", { name: /All\s*10/ }).click();
+  await expect(page.getByText("Caption", { exact: true })).toHaveCount(0);
 
   const withoutCaption = await cardCenter(page, "Eagle brand board");
   await page.mouse.click(withoutCaption.x, withoutCaption.y);
   await page.getByTitle("Open inspector").click();
+  // The Prompt editor renders for every selected asset -- its presence
+  // proves the inspector really switched to the new selection, so the
+  // caption's absence below is meaningful rather than a closed inspector.
+  await expect(page.getByLabel("Prompt")).toBeVisible();
   await expect(page.getByText("Caption", { exact: true })).toHaveCount(0);
 });
 
