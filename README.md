@@ -54,9 +54,19 @@ It's built to feel native and instant: a **Zig + SQLite** engine (via the [Nativ
 
 ## Installation
 
-### Download a build
+### Download a release
 
-Tagged versions (`v*`) publish to [**Releases**](https://github.com/lzitser23/maat/releases) with a Windows zip and a signed, notarized macOS app. Between releases, every merge to `main` builds both platforms via GitHub Actions (`.github/workflows/build.yml`); download from that run's **Artifacts** on the [Actions page](https://github.com/lzitser23/maat/actions):
+Tagged versions (`v*`) publish to [**Releases**](https://github.com/lzitser23/maat/releases):
+
+| Platform | Asset | Notes |
+| --- | --- | --- |
+| macOS | `Maat-vX.Y.Z.dmg` | Signed + notarized — open the DMG and drag **Maat** to **Applications** |
+| macOS | `Maat-Native-macos-vX.Y.Z.zip` | The same signed, notarized `.app`, zipped |
+| Windows | `Maat-Native-windows-vX.Y.Z.zip` | Portable — unzip anywhere and run `bin\maat-native.exe` |
+
+### Download a CI build
+
+Between releases, every merge to `main` builds both platforms via GitHub Actions (`.github/workflows/build.yml`); download from that run's **Artifacts** on the [Actions page](https://github.com/lzitser23/maat/actions):
 
 | Platform | Asset | Notes |
 | --- | --- | --- |
