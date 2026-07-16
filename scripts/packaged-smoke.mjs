@@ -101,6 +101,35 @@ function dumpCdpListeners() {
   });
 }
 
+// CDP fallback: the WebView2 Runtime on newer windows-latest images (first
+// seen on win25-vs2026/20260714.173) ignores --remote-debugging-port from
+// WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS outright -- netstat confirms nothing
+// ever listens on the port, while the app's own diagnostic log shows it
+// running healthily. When CDP never comes up, this reads that log and
+// accepts the run if the same bar the CDP assertions prove is met:
+// `bridge.dispatch` can only be emitted after the frontend booted inside
+// the WebView (webview attached, embedded assets served, JS ran) and called
+// a native command -- i.e. src/App.tsx's getAppState() boot round-trip. A
+// blank white shell or a page error before boot produces zero dispatches.
+async function verifyViaDiagnosticLog(appDataDir) {
+  const logPath = path.join(appDataDir.local, "com.lzitser.maat-native", "Logs", "native-sdk.jsonl");
+  const text = await readFile(logPath, "utf8").catch(() => "");
+  const counts = { "app.start": 0, "bridge.dispatch": 0, "runtime.frame": 0 };
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line);
+      if (event.name in counts) counts[event.name] += 1;
+    } catch {
+      // partial trailing line from the just-killed writer -- ignore
+    }
+  }
+  return {
+    ok: counts["app.start"] >= 1 && counts["bridge.dispatch"] >= 1 && counts["runtime.frame"] >= 1,
+    counts,
+  };
+}
+
 // The exe computes its catalog storage root (%APPDATA%\MaatNative,
 // src-zig/main.zig's computeStorageRoot) and the Native SDK computes its own
 // per-app State dir (%LOCALAPPDATA%\<bundle id>\State, window geometry etc.
@@ -230,6 +259,21 @@ async function main() {
     }
     if (child?.pid) {
       await runToCompletion("taskkill", ["/PID", String(child.pid), "/T", "/F"]);
+    }
+    // Reading the log after taskkill: the writer has closed its handle, so
+    // there is no sharing-mode race to worry about.
+    if (!pass && failReason.startsWith("CDP endpoint never came up")) {
+      const verdict = await verifyViaDiagnosticLog(appDataDir);
+      if (verdict.ok) {
+        pass = true;
+        failReason = "";
+        log(
+          `CDP unavailable (newer WebView2 runtimes ignore --remote-debugging-port); ` +
+            `verified via the app's diagnostic log instead: app started, ` +
+            `${verdict.counts["bridge.dispatch"]} bridge round-trip(s), ` +
+            `${verdict.counts["runtime.frame"]} frame(s) published.`,
+        );
+      }
     }
     // On failure, surface the app's own diagnostic logs before the isolated
     // dir is deleted below -- without this, a launch failure on CI reduces
