@@ -121,6 +121,23 @@ pub fn build(b: *std.Build) void {
         .name = app_exe_name,
         .root_module = app_mod,
     });
+    // Windows subsystem posture -- backport of @native-sdk/cli 0.5.1's fix
+    // (that release's `native init`-generated build.zig template, in
+    // src/tooling/templates.zig, gates it identically). We stay pinned to
+    // 0.4.3 here, which never had this line at all -- every exe it built
+    // was console-subsystem, so launching the portable exe always flashed
+    // a terminal window behind the app. Gating on `optimize != .Debug`
+    // rather than "always windows" keeps `zig build test`'s own Compile
+    // step untouched (it's a separate b.addTest() artifact, not `exe`) and
+    // keeps the default Debug `zig build dev`/`zig build run` loop console
+    // -subsystem so its stdout/stderr (trace output, debug-overlay prints)
+    // stays visible in the terminal; only the ReleaseFast portable exe
+    // (`pnpm portable:windows` / ReleaseFast packaging) goes GUI-subsystem.
+    // Drop this block if the SDK pin ever moves past 0.5.1 and this
+    // build.zig is regenerated from the newer template.
+    if (target.result.os.tag == .windows and optimize != .Debug) {
+        exe.subsystem = .windows;
+    }
     linkPlatform(b, target, app_mod, exe, selected_platform, web_engine, native_sdk_path, cef_dir, cef_auto_install);
     b.installArtifact(exe);
 
