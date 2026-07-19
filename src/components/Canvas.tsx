@@ -1,21 +1,18 @@
 import type { OrderedExcalidrawElement } from "@excalidraw/excalidraw/element/types";
 import type { ExcalidrawImperativeAPI, NormalizedZoomValue } from "@excalidraw/excalidraw/types";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from "react";
-import { FileDown, Info, Loader2, X } from "lucide-react";
+import { FileDown, Loader2, X } from "lucide-react";
 import { assetIcon, assetKindLabel } from "../lib/asset";
-import { assetModelUrl, assetOriginalUrl, assetPreviewUrl, listenForNativeDrops, type ClipboardImportItem } from "../lib/bridge";
+import { assetPreviewUrl, listenForNativeDrops, type ClipboardImportItem } from "../lib/bridge";
 import { formatBytes } from "../lib/format";
 import { filteredNodes } from "../lib/scope";
+import { FocusedAssetContent, getFocusedScale } from "./FocusedAsset";
 import type { Asset, BoardNode, BoardScope, BoardView, Frame } from "../types";
 
 // Excalidraw (plus its mermaid/katex/cytoscape dependency graph) is heavy — split it out of the
 // entry chunk. The overlay still mounts as soon as the board renders (for two-way viewport sync and
 // so saved sketches are visible), but the download no longer blocks the shell's first paint.
 const DrawingOverlay = lazy(() => import("./DrawingOverlay"));
-
-// Three.js is heavy too — the interactive 3D viewer only downloads the first time a model
-// asset is actually spotlighted (lib/modelThumbs.ts shares the same chunk).
-const ModelViewer = lazy(() => import("./ModelViewer"));
 
 const FOCUS_NODE_EVENT = "maat-focus-node";
 const MIN_SCALE = 0.12;
@@ -25,8 +22,6 @@ const WHEEL_DELTA_STEP = 60;
 const WHEEL_MAX_STEPS = 12;
 const CLICK_DRAG_TOLERANCE = 4;
 const SPOTLIGHT_DRIFT_PX = 120;
-const SPOTLIGHT_PADDING_X = 56;
-const SPOTLIGHT_PADDING_Y = 56;
 const FRAME_MIN = 80;
 
 type FrameCorner = "nw" | "ne" | "sw" | "se";
@@ -809,16 +804,6 @@ function AssetCard({
   const Icon = assetIcon(asset.kind);
   const focused = spotlight === "focused";
   const previewUrl = assetPreviewUrl(asset);
-  // Spotlighted 3D models swap the static thumbnail for the live orbit viewer.
-  const modelUrl = focused && asset.kind === "model" ? assetModelUrl(asset) : null;
-  // Focused view: start from the (already-loaded) thumbnail, then swap to the full-res original once
-  // it's decoded, so focusing an image doesn't show a permanently blurry downscaled thumbnail.
-  const originalUrl = focused ? assetOriginalUrl(asset) : null;
-  const [originalLoaded, setOriginalLoaded] = useState(false);
-  useEffect(() => {
-    setOriginalLoaded(false);
-  }, [originalUrl]);
-  const displayUrl = originalLoaded && originalUrl ? originalUrl : previewUrl;
 
   const focusedScale = getFocusedScale(node, canvasSize);
   const effectiveScale = focused ? focusedScale : scale;
@@ -864,67 +849,41 @@ function AssetCard({
         window.dispatchEvent(new CustomEvent(FOCUS_NODE_EVENT, { detail: node.id }));
       }}
     >
-      <div className="relative flex h-full flex-col">
-        {focused && (
-          <button
-            type="button"
-            aria-label="Open inspector"
-            title="Open inspector"
-            className="asset-card__inspect"
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={(event) => {
-              event.stopPropagation();
-              onOpenInspector(node.id);
-            }}
-          >
-            <Info className="h-4 w-4" />
-          </button>
-        )}
-        <div className="asset-card__media min-h-0 flex-1 overflow-hidden bg-[var(--asset-media)]">
-          {modelUrl ? (
-            <Suspense
-              fallback={
-                <div className="flex h-full w-full items-center justify-center">
-                  <Loader2 className="h-5 w-5 animate-spin text-[var(--muted)]" />
+      {focused ? (
+        <FocusedAssetContent asset={asset} onOpenInspector={() => onOpenInspector(node.id)} />
+      ) : (
+        <div className="relative flex h-full flex-col">
+          <div className="asset-card__media min-h-0 flex-1 overflow-hidden bg-[var(--asset-media)]">
+            {previewUrl ? (
+              <img
+                src={previewUrl}
+                alt=""
+                // Model thumbnails are square renders on a transparent background — cropping
+                // them with object-cover lops off the model itself.
+                className={`h-full w-full ${asset.kind === "model" ? "object-contain" : "object-cover"}`}
+                draggable={false}
+              />
+            ) : (
+              <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-5 text-center">
+                <div className="flex h-14 w-14 items-center justify-center rounded-md border border-[var(--line)] bg-[var(--panel)]">
+                  <Icon className="h-7 w-7 text-[var(--muted)]" />
                 </div>
-              }
-            >
-              <ModelViewer src={modelUrl} />
-            </Suspense>
-          ) : displayUrl ? (
-            <img
-              src={displayUrl}
-              alt=""
-              // Model thumbnails are square renders on a transparent background — cropping
-              // them with object-cover lops off the model itself.
-              className={`h-full w-full ${asset.kind === "model" ? "object-contain" : "object-cover"}`}
-              draggable={false}
-            />
-          ) : (
-            <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-5 text-center">
-              <div className="flex h-14 w-14 items-center justify-center rounded-md border border-[var(--line)] bg-[var(--panel)]">
-                <Icon className="h-7 w-7 text-[var(--muted)]" />
+                <div>
+                  <div className="text-sm font-semibold">{assetKindLabel(asset.kind)}</div>
+                  <div className="mt-1 text-xs text-[var(--muted)]">{asset.extension || "file"}</div>
+                </div>
               </div>
-              <div>
-                <div className="text-sm font-semibold">{assetKindLabel(asset.kind)}</div>
-                <div className="mt-1 text-xs text-[var(--muted)]">{asset.extension || "file"}</div>
-              </div>
+            )}
+          </div>
+          <div className="asset-card__footer bg-[var(--asset-footer)] px-1.5 pb-0 pt-2">
+            <div className="truncate text-sm font-medium">{asset.name}</div>
+            <div className="mt-0.5 flex items-center justify-between text-[10px] uppercase tracking-[0.08em] text-[var(--muted)]">
+              <span>{assetKindLabel(asset.kind)}</span>
+              <span>{formatBytes(asset.size)}</span>
             </div>
-          )}
-        </div>
-        {originalUrl && !originalLoaded && (
-          // Invisible preloader: once the full-res original finishes decoding, `displayUrl` above
-          // swaps to it (already cached, so the swap is instant with no flicker).
-          <img src={originalUrl} alt="" style={{ display: "none" }} onLoad={() => setOriginalLoaded(true)} />
-        )}
-        <div className="asset-card__footer bg-[var(--asset-footer)] px-1.5 pb-0 pt-2">
-          <div className="truncate text-sm font-medium">{asset.name}</div>
-          <div className="mt-0.5 flex items-center justify-between text-[10px] uppercase tracking-[0.08em] text-[var(--muted)]">
-            <span>{assetKindLabel(asset.kind)}</span>
-            <span>{formatBytes(asset.size)}</span>
           </div>
         </div>
-      </div>
+      )}
     </article>
   );
 }
@@ -1123,14 +1082,6 @@ function spotlightMetaLine(asset: Asset | undefined) {
   if (!asset) return "";
   const label = assetKindLabel(asset.kind);
   return asset.width && asset.height ? `${label} · ${asset.width} × ${asset.height}` : label;
-}
-
-function getFocusedScale(node: BoardNode, canvasSize: { width: number; height: number }) {
-  if (canvasSize.width <= 0 || canvasSize.height <= 0) return 1;
-  return Math.min(
-    Math.max(1, canvasSize.width - SPOTLIGHT_PADDING_X) / node.width,
-    Math.max(1, canvasSize.height - SPOTLIGHT_PADDING_Y) / node.height,
-  );
 }
 
 function scrubExcalidrawControls(element: HTMLElement) {

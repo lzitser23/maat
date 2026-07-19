@@ -160,16 +160,6 @@ export default function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  // Escape leaves Infinity's immersive chrome-hiding and returns to Canvas.
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || viewMode !== "infinity" || isEditableKeyTarget(event.target)) return;
-      setViewMode("canvas");
-    };
-    window.addEventListener("keydown", handleEscape);
-    return () => window.removeEventListener("keydown", handleEscape);
-  }, [viewMode, setViewMode]);
-
   // WebView2 (and Chromium generally) treats Ctrl+wheel / Ctrl+=/-/0 as a request to zoom the whole
   // page. Canvas.tsx already prevents that within its own bounds for its own zoom logic, but anywhere
   // else in the app (sidebar, header, inspector) the browser's page zoom would still fire and scale the
@@ -388,6 +378,22 @@ export default function App() {
     setInspectorNodeId(null);
     select([]);
   };
+
+  // Escape exits a focused/spotlighted asset first (Canvas, Grid, or Infinity, whichever is focused);
+  // only once nothing is focused does a second Escape leave Infinity's immersive chrome-hiding and
+  // return to Canvas -- otherwise the two would fight over the same keypress.
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || isEditableKeyTarget(event.target)) return;
+      if (focusedNodeId) {
+        handleClearFocus();
+        return;
+      }
+      if (viewMode === "infinity") setViewMode("canvas");
+    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [focusedNodeId, handleClearFocus, viewMode, setViewMode]);
 
   const handleOpenInspector = (nodeId: string) => {
     setInspectorNodeId(nodeId);
