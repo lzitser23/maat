@@ -133,6 +133,16 @@ pub const Asset = struct {
     trashedAt: ?[]const u8,
     createdAt: []const u8,
     metadataJson: ?[]const u8,
+    /// Captured automatically from a dataset-folder sidecar `.txt` file at import
+    /// time (see ingest.zig's `folderCandidates` sidecar-pairing doc comment) -
+    /// never user-edited. Distinct from `note` (Eagle-import metadata) and from
+    /// `prompt` (user-entered, editable in the Inspector) below. Defaults to
+    /// `null` so the handful of pre-existing `Asset{...}` literals elsewhere
+    /// (tests, `insertBoardNode`-adjacent code) don't all need updating.
+    caption: ?[]const u8 = null,
+    /// User-editable AI-generation prompt, set via the `set_asset_prompt` bridge
+    /// command (storage.zig's `setAssetPrompt`) - never populated by ingest.
+    prompt: ?[]const u8 = null,
 
     pub fn deinit(self: Asset, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -154,6 +164,8 @@ pub const Asset = struct {
         if (self.trashedAt) |v| allocator.free(v);
         allocator.free(self.createdAt);
         if (self.metadataJson) |v| allocator.free(v);
+        if (self.caption) |v| allocator.free(v);
+        if (self.prompt) |v| allocator.free(v);
     }
 
     pub fn toJson(self: Asset, allocator: std.mem.Allocator) ![]u8 {
@@ -408,6 +420,8 @@ pub const Storage = struct {
             \\    trashed_at TEXT,
             \\    created_at TEXT NOT NULL,
             \\    metadata_json TEXT,
+            \\    caption TEXT,
+            \\    prompt TEXT,
             \\    UNIQUE(library_id, hash)
             \\);
             \\
@@ -470,6 +484,8 @@ pub const Storage = struct {
             .{ .col = "note", .sql = "ALTER TABLE assets ADD COLUMN note TEXT" },
             .{ .col = "source_url", .sql = "ALTER TABLE assets ADD COLUMN source_url TEXT" },
             .{ .col = "trashed_at", .sql = "ALTER TABLE assets ADD COLUMN trashed_at TEXT" },
+            .{ .col = "caption", .sql = "ALTER TABLE assets ADD COLUMN caption TEXT" },
+            .{ .col = "prompt", .sql = "ALTER TABLE assets ADD COLUMN prompt TEXT" },
         };
         for (migrations) |m| {
             if (!containsString(columns, m.col)) {
@@ -776,7 +792,7 @@ pub const Storage = struct {
         const stmt = try self.prepareStmt(
             \\SELECT rowid, id, library_id, source_id, name, original_path, managed_path, mime, extension, size,
             \\       hash, width, height, kind, preview_status, thumbnail_path, tags_json, folders_json,
-            \\       note, source_url, trashed_at, created_at, metadata_json
+            \\       note, source_url, trashed_at, created_at, metadata_json, caption, prompt
             \\FROM assets WHERE library_id = ?1 AND rowid > ?2 ORDER BY rowid ASC LIMIT ?3
         );
         defer _ = c.sqlite3_finalize(stmt);
@@ -1267,6 +1283,10 @@ pub const Storage = struct {
         errdefer allocator.free(created_at);
         const metadata_json = try columnTextOpt(allocator, stmt, col + 21);
         errdefer if (metadata_json) |v| allocator.free(v);
+        const caption = try columnTextOpt(allocator, stmt, col + 22);
+        errdefer if (caption) |v| allocator.free(v);
+        const prompt = try columnTextOpt(allocator, stmt, col + 23);
+        errdefer if (prompt) |v| allocator.free(v);
 
         return Asset{
             .id = id,
@@ -1291,6 +1311,8 @@ pub const Storage = struct {
             .trashedAt = trashed_at,
             .createdAt = created_at,
             .metadataJson = metadata_json,
+            .caption = caption,
+            .prompt = prompt,
         };
     }
 
@@ -1298,7 +1320,7 @@ pub const Storage = struct {
         const stmt = try self.prepareStmt(
             \\SELECT id, library_id, source_id, name, original_path, managed_path, mime, extension, size,
             \\       hash, width, height, kind, preview_status, thumbnail_path, tags_json, folders_json,
-            \\       note, source_url, trashed_at, created_at, metadata_json
+            \\       note, source_url, trashed_at, created_at, metadata_json, caption, prompt
             \\FROM assets WHERE library_id = ?1 ORDER BY created_at DESC
         );
         defer _ = c.sqlite3_finalize(stmt);
@@ -1370,8 +1392,8 @@ pub const Storage = struct {
                 \\INSERT INTO assets (
                 \\  id, library_id, source_id, name, original_path, managed_path, mime, extension, size,
                 \\  hash, width, height, kind, preview_status, thumbnail_path, tags_json, folders_json,
-                \\  note, source_url, created_at, metadata_json
-                \\) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)
+                \\  note, source_url, created_at, metadata_json, caption, prompt
+                \\) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)
             );
             defer _ = c.sqlite3_finalize(stmt);
             try bindText(stmt, 1, asset.id);
@@ -1395,6 +1417,8 @@ pub const Storage = struct {
             try bindTextOpt(stmt, 19, asset.sourceUrl);
             try bindText(stmt, 20, asset.createdAt);
             try bindTextOpt(stmt, 21, asset.metadataJson);
+            try bindTextOpt(stmt, 22, asset.caption);
+            try bindTextOpt(stmt, 23, asset.prompt);
             _ = try stepDone(stmt);
         }
 
@@ -1580,7 +1604,43 @@ pub const Storage = struct {
         const stmt = try self.prepareStmt(
             \\SELECT id, library_id, source_id, name, original_path, managed_path, mime, extension, size,
             \\       hash, width, height, kind, preview_status, thumbnail_path, tags_json, folders_json,
-            \\       note, source_url, trashed_at, created_at, metadata_json
+            \\       note, source_url, trashed_at, created_at, metadata_json, caption, prompt
+            \\FROM assets WHERE id = ?1 AND library_id = ?2
+        );
+        defer _ = c.sqlite3_finalize(stmt);
+        try bindText(stmt, 1, asset_id);
+        try bindText(stmt, 2, board_id);
+        if (!try stepRow(stmt)) return error.NotFound;
+        return try assetFromRow(allocator, stmt, 0);
+    }
+
+    /// User-editable AI-generation prompt (see `Asset.prompt`'s doc comment for how
+    /// this differs from `note`/`caption`). Mirrors `renameBoard`'s update-then-
+    /// refetch shape: an UPDATE followed by a full re-SELECT of the row, so the
+    /// caller always gets back the exact row now in the catalog.
+    pub fn setAssetPrompt(
+        self: *Storage,
+        allocator: std.mem.Allocator,
+        board_id: []const u8,
+        asset_id: []const u8,
+        prompt: []const u8,
+    ) !Asset {
+        self.mutex.lockUncancelable(self.ioHandle());
+        defer self.mutex.unlock(self.ioHandle());
+
+        {
+            const stmt = try self.prepareStmt("UPDATE assets SET prompt = ?1 WHERE id = ?2 AND library_id = ?3");
+            defer _ = c.sqlite3_finalize(stmt);
+            try bindText(stmt, 1, prompt);
+            try bindText(stmt, 2, asset_id);
+            try bindText(stmt, 3, board_id);
+            _ = try stepDone(stmt);
+        }
+
+        const stmt = try self.prepareStmt(
+            \\SELECT id, library_id, source_id, name, original_path, managed_path, mime, extension, size,
+            \\       hash, width, height, kind, preview_status, thumbnail_path, tags_json, folders_json,
+            \\       note, source_url, trashed_at, created_at, metadata_json, caption, prompt
             \\FROM assets WHERE id = ?1 AND library_id = ?2
         );
         defer _ = c.sqlite3_finalize(stmt);

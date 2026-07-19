@@ -46,6 +46,7 @@ import {
   purgeAssets,
   renameBoard as renameBoardCommand,
   restoreAssets as restoreBoardAssets,
+  setAssetPrompt as setAssetPromptCommand,
   startWindowDrag,
   toggleMaximizeWindow,
   trashAssets as trashBoardAssets,
@@ -582,6 +583,17 @@ export default function App() {
     } catch (error) {
       console.error(error);
       setStatus(error instanceof Error ? error.message : "Could not rename board");
+    }
+  };
+
+  const handleSetAssetPrompt = async (assetId: string, prompt: string) => {
+    if (!activeBoardId) return;
+    try {
+      const updated = await setAssetPromptCommand(activeBoardId, assetId, prompt);
+      patchAsset(updated);
+    } catch (error) {
+      console.error(error);
+      setStatus(error instanceof Error ? error.message : "Could not save prompt");
     }
   };
 
@@ -1180,6 +1192,7 @@ export default function App() {
                 loading={loading}
                 assetCount={visibleCount}
                 nodeCount={visibleNodes.length}
+                onSetAssetPrompt={handleSetAssetPrompt}
                 floating
               />
             </div>
@@ -1195,6 +1208,7 @@ export default function App() {
             loading={loading}
             assetCount={visibleCount}
             nodeCount={visibleNodes.length}
+            onSetAssetPrompt={handleSetAssetPrompt}
           />
         )}
       </div>

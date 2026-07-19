@@ -552,6 +552,22 @@ export async function setAssetThumbnail(boardId: string, assetId: string, png: B
   return invoke<Asset>("set_asset_thumbnail", { boardId, assetId, uploadPath: path });
 }
 
+// Persists the user-editable AI-generation prompt for an asset. Mirrors renameBoard's
+// shape: the mock branch mutates the in-memory view directly; the native branch round-trips
+// through the set_asset_prompt bridge command and returns the updated row.
+export async function setAssetPrompt(boardId: string, assetId: string, prompt: string): Promise<Asset> {
+  if (!isNative()) {
+    const view = mockViews.get(boardId) ?? mockState.view;
+    const updated = view.assets.map((asset) => (asset.id === assetId ? { ...asset, prompt } : asset));
+    view.assets = updated;
+    if (mockState.activeBoardId === boardId) mockState.view = view;
+    const asset = updated.find((candidate) => candidate.id === assetId);
+    if (!asset) throw new Error("Asset not found");
+    return asset;
+  }
+  return invoke<Asset>("set_asset_prompt", { boardId, assetId, prompt });
+}
+
 const board: Board = {
   id: "mock-board",
   name: "Maat Studio",
@@ -561,30 +577,40 @@ const board: Board = {
   updatedAt: new Date().toISOString(),
 };
 
-const mockDetails: Record<string, Pick<Asset, "tags" | "folders" | "note" | "sourceUrl">> = {
+const mockDetails: Record<string, Pick<Asset, "tags" | "folders" | "note" | "sourceUrl" | "caption" | "prompt">> = {
   a1: {
     tags: ["identity", "brand", "launch"],
     folders: ["Maat", "References"],
     note: "Primary board for the product language.",
     sourceUrl: "https://example.com/maat",
+    caption: null,
+    prompt: null,
   },
   a2: {
     tags: ["motion", "desktop"],
     folders: ["Maat", "Inspiration"],
     note: "Zoom pacing and canvas motion reference.",
     sourceUrl: null,
+    caption: null,
+    prompt: null,
   },
   a9: {
     tags: ["spatial", "ui"],
     folders: ["Maat", "References"],
     note: "Large-detail still used for focus zoom checks.",
     sourceUrl: null,
+    caption: null,
+    prompt: null,
   },
   a10: {
     tags: ["palette", "screenshot"],
     folders: ["Maat", "Capture"],
     note: "Useful for color contrast checks.",
     sourceUrl: null,
+    // Sample AI-training-dataset sidecar caption, for e2e coverage of the
+    // Inspector's Caption section (see tests/e2e/app.spec.ts).
+    caption: "A warm-toned palette swatch captured from a desktop wallpaper.",
+    prompt: null,
   },
 };
 
@@ -650,7 +676,7 @@ function mockAsset(
   sourceId = "mock-eagle",
   previewStatusOverride?: Asset["previewStatus"],
 ): Asset {
-  const details = mockDetails[id] ?? { tags: [], folders: [], note: null, sourceUrl: null };
+  const details = mockDetails[id] ?? { tags: [], folders: [], note: null, sourceUrl: null, caption: null, prompt: null };
   return {
     id,
     boardId,
@@ -674,6 +700,8 @@ function mockAsset(
     trashedAt: null,
     createdAt: new Date().toISOString(),
     metadataJson: null,
+    caption: details.caption,
+    prompt: details.prompt,
   };
 }
 

@@ -423,6 +423,59 @@ test("wheel pans, ctrl+wheel zooms, and explicit inspector metadata work", async
   await expect(page.getByText("https://example.com/maat")).toBeVisible();
 });
 
+test("Inspector shows a Caption section for an asset that has one, and omits it otherwise", async ({ page }) => {
+  const withCaption = await cardCenter(page, "Palette capture");
+  await page.mouse.click(withCaption.x, withCaption.y);
+  await page.getByTitle("Open inspector").click();
+  await expect(page.getByText("Caption", { exact: true })).toBeVisible();
+  await expect(page.getByText("A warm-toned palette swatch captured from a desktop wallpaper.")).toBeVisible();
+
+  // Clear the current spotlight via a scope click, not a canvas-corner
+  // click -- the spotlighted card is enlarged and can cover any "empty"
+  // corner (especially once the docked Inspector narrows the canvas), so a
+  // coordinate click is not guaranteed to land on background. The sibling
+  // Prompt test below documents the same choice.
+  await page.getByRole("button", { name: /All\s*10/ }).click();
+  await expect(page.getByText("Caption", { exact: true })).toHaveCount(0);
+
+  const withoutCaption = await cardCenter(page, "Eagle brand board");
+  await page.mouse.click(withoutCaption.x, withoutCaption.y);
+  await page.getByTitle("Open inspector").click();
+  // The Prompt editor renders for every selected asset -- its presence
+  // proves the inspector really switched to the new selection, so the
+  // caption's absence below is meaningful rather than a closed inspector.
+  await expect(page.getByLabel("Prompt")).toBeVisible();
+  await expect(page.getByText("Caption", { exact: true })).toHaveCount(0);
+});
+
+test("typing a Prompt in the Inspector persists across deselect/reselect", async ({ page }) => {
+  const card = await cardCenter(page, "Palette capture");
+  await page.mouse.click(card.x, card.y);
+  await page.getByTitle("Open inspector").click();
+
+  const prompt = page.getByLabel("Prompt");
+  await expect(prompt).toHaveValue("");
+  await prompt.fill("a photorealistic desktop wallpaper, warm palette, 4k");
+  await prompt.blur();
+
+  // Deselect (a scope click clears the spotlight/inspector selection the
+  // same way sidebar navigation always does -- more reliable here than a
+  // canvas background click, since the spotlighted card is scaled to fill
+  // the whole canvas viewport while it's focused, leaving no guaranteed
+  // empty corner to click once the docked Inspector has narrowed it), then
+  // reselect the same asset and reopen the inspector for it.
+  await page.getByRole("button", { name: /All\s*10/ }).click();
+  await expect(page.getByLabel("Prompt")).toHaveCount(0);
+
+  // Recompute the card's position rather than reusing the pre-spotlight
+  // coordinates -- safer against any layout settling since deselecting.
+  const reselectCard = await cardCenter(page, "Palette capture");
+  await page.mouse.click(reselectCard.x, reselectCard.y);
+  await page.getByTitle("Open inspector").click();
+
+  await expect(page.getByLabel("Prompt")).toHaveValue("a photorealistic desktop wallpaper, warm palette, 4k");
+});
+
 test("delete moves selected assets to trash", async ({ page }) => {
   const card = page.getByText("Eagle brand board").locator("xpath=ancestor::article");
   await card.click();

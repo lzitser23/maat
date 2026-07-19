@@ -671,6 +671,251 @@ test "a forced insertAsset failure after the copy does not orphan the managed fi
     try testing.expect(!fileExists(io, managed_path));
 }
 
+// ---------------------------------------------------------------------------
+// AI-dataset feature: sidecar `.txt` caption pairing in folderCandidates.
+// See folderCandidates's doc comment in ingest.zig for the exact rules
+// (extension must be .txt case-insensitively, basename match is case-
+// insensitive, only consumed when a sibling actually exists, empty/unreadable
+// sidecars fall back to a normal candidate).
+// ---------------------------------------------------------------------------
+
+test "a folder import captures a sidecar .txt as the paired image's caption and skips it as its own asset" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try absPath(allocator, tmp.dir, io);
+    defer allocator.free(tmp_root);
+
+    const folder = try std.fmt.allocPrint(allocator, "{s}/dataset", .{tmp_root});
+    defer allocator.free(folder);
+
+    const image_path = try std.fmt.allocPrint(allocator, "{s}/photo001.png", .{folder});
+    defer allocator.free(image_path);
+    try writeTestPng(allocator, image_path);
+
+    const caption_path = try std.fmt.allocPrint(allocator, "{s}/photo001.txt", .{folder});
+    defer allocator.free(caption_path);
+    try writeAbsoluteFile(io, caption_path, "  a cat sitting on a windowsill  \n");
+
+    const root_path = try std.fmt.allocPrint(allocator, "{s}/data", .{tmp_root});
+    defer allocator.free(root_path);
+    var store = try Storage.open(allocator, root_path);
+    defer store.close();
+
+    const boards = try store.listBoards(allocator);
+    defer {
+        for (boards) |b| b.deinit(allocator);
+        allocator.free(boards);
+    }
+    const board = boards[0];
+
+    const paths = [_][]const u8{folder};
+    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths);
+    defer report.deinit(allocator);
+
+    // Only the image is imported -- the sidecar .txt is consumed as its
+    // caption, not imported as its own separate asset.
+    try testing.expectEqual(@as(i64, 1), report.imported);
+    try testing.expectEqual(@as(i64, 0), report.failed);
+
+    const view = try store.loadBoard(allocator, board.id);
+    defer view.deinit(allocator);
+    try testing.expectEqual(@as(usize, 1), view.assets.len);
+
+    const photo = findAssetByName(view.assets, "photo001.png") orelse return error.MissingAsset;
+    // Whitespace-trimmed, not the raw sidecar bytes.
+    try testing.expectEqualStrings("a cat sitting on a windowsill", photo.caption.?);
+    try testing.expectEqual(@as(?[]const u8, null), photo.prompt);
+}
+
+test "a sidecar .txt with no matching sibling is imported as its own asset, not suppressed" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try absPath(allocator, tmp.dir, io);
+    defer allocator.free(tmp_root);
+
+    const folder = try std.fmt.allocPrint(allocator, "{s}/dataset", .{tmp_root});
+    defer allocator.free(folder);
+
+    const orphan_caption_path = try std.fmt.allocPrint(allocator, "{s}/notes.txt", .{folder});
+    defer allocator.free(orphan_caption_path);
+    try writeAbsoluteFile(io, orphan_caption_path, "just a loose caption file, no sibling image");
+
+    const root_path = try std.fmt.allocPrint(allocator, "{s}/data", .{tmp_root});
+    defer allocator.free(root_path);
+    var store = try Storage.open(allocator, root_path);
+    defer store.close();
+
+    const boards = try store.listBoards(allocator);
+    defer {
+        for (boards) |b| b.deinit(allocator);
+        allocator.free(boards);
+    }
+    const board = boards[0];
+
+    const paths = [_][]const u8{folder};
+    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths);
+    defer report.deinit(allocator);
+
+    try testing.expectEqual(@as(i64, 1), report.imported);
+
+    const view = try store.loadBoard(allocator, board.id);
+    defer view.deinit(allocator);
+    try testing.expectEqual(@as(usize, 1), view.assets.len);
+
+    const notes = findAssetByName(view.assets, "notes.txt") orelse return error.MissingAsset;
+    try testing.expectEqualStrings("document", notes.kind);
+    try testing.expectEqual(@as(?[]const u8, null), notes.caption);
+}
+
+test "sidecar caption matching is case-insensitive on both the extension and the basename" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try absPath(allocator, tmp.dir, io);
+    defer allocator.free(tmp_root);
+
+    const folder = try std.fmt.allocPrint(allocator, "{s}/dataset", .{tmp_root});
+    defer allocator.free(folder);
+
+    // Mixed-case basename ("Photo002") paired with a differently-cased
+    // basename + extension on the sidecar ("photo002.TXT").
+    const image_path = try std.fmt.allocPrint(allocator, "{s}/Photo002.png", .{folder});
+    defer allocator.free(image_path);
+    try writeTestPng(allocator, image_path);
+
+    const caption_path = try std.fmt.allocPrint(allocator, "{s}/photo002.TXT", .{folder});
+    defer allocator.free(caption_path);
+    try writeAbsoluteFile(io, caption_path, "a dog catching a frisbee");
+
+    const root_path = try std.fmt.allocPrint(allocator, "{s}/data", .{tmp_root});
+    defer allocator.free(root_path);
+    var store = try Storage.open(allocator, root_path);
+    defer store.close();
+
+    const boards = try store.listBoards(allocator);
+    defer {
+        for (boards) |b| b.deinit(allocator);
+        allocator.free(boards);
+    }
+    const board = boards[0];
+
+    const paths = [_][]const u8{folder};
+    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths);
+    defer report.deinit(allocator);
+
+    try testing.expectEqual(@as(i64, 1), report.imported);
+
+    const view = try store.loadBoard(allocator, board.id);
+    defer view.deinit(allocator);
+    try testing.expectEqual(@as(usize, 1), view.assets.len);
+    try testing.expectEqualStrings("a dog catching a frisbee", view.assets[0].caption.?);
+}
+
+test "a sidecar-shaped file with a non-.txt extension is never treated as a caption" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try absPath(allocator, tmp.dir, io);
+    defer allocator.free(tmp_root);
+
+    const folder = try std.fmt.allocPrint(allocator, "{s}/dataset", .{tmp_root});
+    defer allocator.free(folder);
+
+    const image_path = try std.fmt.allocPrint(allocator, "{s}/photo003.png", .{folder});
+    defer allocator.free(image_path);
+    try writeTestPng(allocator, image_path);
+
+    // Same basename, but `.caption` rather than `.txt` -- must not pair.
+    const not_a_sidecar_path = try std.fmt.allocPrint(allocator, "{s}/photo003.caption", .{folder});
+    defer allocator.free(not_a_sidecar_path);
+    try writeAbsoluteFile(io, not_a_sidecar_path, "should not be treated as a caption");
+
+    const root_path = try std.fmt.allocPrint(allocator, "{s}/data", .{tmp_root});
+    defer allocator.free(root_path);
+    var store = try Storage.open(allocator, root_path);
+    defer store.close();
+
+    const boards = try store.listBoards(allocator);
+    defer {
+        for (boards) |b| b.deinit(allocator);
+        allocator.free(boards);
+    }
+    const board = boards[0];
+
+    const paths = [_][]const u8{folder};
+    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths);
+    defer report.deinit(allocator);
+
+    // Both files are imported as separate assets -- no pairing happened.
+    try testing.expectEqual(@as(i64, 2), report.imported);
+
+    const view = try store.loadBoard(allocator, board.id);
+    defer view.deinit(allocator);
+    try testing.expectEqual(@as(usize, 2), view.assets.len);
+
+    const photo = findAssetByName(view.assets, "photo003.png") orelse return error.MissingAsset;
+    try testing.expectEqual(@as(?[]const u8, null), photo.caption);
+}
+
+test "an empty sidecar .txt is not treated as a caption and is imported as its own asset" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try absPath(allocator, tmp.dir, io);
+    defer allocator.free(tmp_root);
+
+    const folder = try std.fmt.allocPrint(allocator, "{s}/dataset", .{tmp_root});
+    defer allocator.free(folder);
+
+    const image_path = try std.fmt.allocPrint(allocator, "{s}/photo004.png", .{folder});
+    defer allocator.free(image_path);
+    try writeTestPng(allocator, image_path);
+
+    const caption_path = try std.fmt.allocPrint(allocator, "{s}/photo004.txt", .{folder});
+    defer allocator.free(caption_path);
+    try writeAbsoluteFile(io, caption_path, "   \n  "); // whitespace-only
+
+    const root_path = try std.fmt.allocPrint(allocator, "{s}/data", .{tmp_root});
+    defer allocator.free(root_path);
+    var store = try Storage.open(allocator, root_path);
+    defer store.close();
+
+    const boards = try store.listBoards(allocator);
+    defer {
+        for (boards) |b| b.deinit(allocator);
+        allocator.free(boards);
+    }
+    const board = boards[0];
+
+    const paths = [_][]const u8{folder};
+    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths);
+    defer report.deinit(allocator);
+
+    // Both the image and the (empty) sidecar are imported -- an empty
+    // caption isn't worth suppressing the .txt asset for.
+    try testing.expectEqual(@as(i64, 2), report.imported);
+
+    const view = try store.loadBoard(allocator, board.id);
+    defer view.deinit(allocator);
+    try testing.expectEqual(@as(usize, 2), view.assets.len);
+
+    const photo = findAssetByName(view.assets, "photo004.png") orelse return error.MissingAsset;
+    try testing.expectEqual(@as(?[]const u8, null), photo.caption);
+    try testing.expect(findAssetByName(view.assets, "photo004.txt") != null);
+}
+
 test "a forced insertAsset failure after the copy does not orphan a generated thumbnail" {
     const allocator = testing.allocator;
     const io = testing.io;
