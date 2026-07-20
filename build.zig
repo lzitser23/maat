@@ -538,9 +538,9 @@ fn patchedWebview2HostSource(b: *std.Build, native_sdk_path: []const u8) std.Bui
     else
         @panic("webview2_host.cpp no longer contains the expected ptMinTrackSize text right after the WM_GETMINMAXINFO patch ran -- the SDK likely changed; update or drop this build-time patch in build.zig");
 
-    // Chromeless-maximized top-gap patch. This one is ours, not an
-    // upstream SDK fix -- confirmed absent from @native-sdk/cli 0.5.1 too
-    // (diffed webview2_host.cpp against a 0.5.1 tarball; the only Windows
+    // Chromeless top-frame reclaim. This one is ours, not an upstream SDK
+    // fix -- confirmed absent from @native-sdk/cli 0.5.1 too (diffed
+    // webview2_host.cpp against a 0.5.1 tarball; the only Windows
     // chrome-related change in that release is a standard/hidden-titlebar
     // dark-mode caption color fix that explicitly excludes chromeless
     // windows, see applyStandardTitlebarColorScheme's own guard). Root
@@ -548,31 +548,42 @@ fn patchedWebview2HostSource(b: *std.Build, native_sdk_path: []const u8) std.Bui
     // get NO custom WM_NCCALCSIZE handling above -- only the hidden-
     // titlebar style does -- so the entire non-client calculation is left
     // to DefWindowProc, which keeps reserving its normal resize-frame
-    // thickness at the top even though there is no caption. That
-    // reservation is invisible in the RESTORED window: createNativeWindow
-    // already grows the outer window past the requested content size by
-    // exactly that thickness (adjustWindowRectForDpi), so subtracting it
-    // back out in WM_NCCALCSIZE still lands the client rect at the full
-    // requested content area, border reserved harmlessly outside it. But
-    // the WM_GETMINMAXINFO patch just above pins a MAXIMIZED chromeless
-    // window's outer rect to the monitor's work area EXACTLY (deliberately,
-    // so it never bleeds off-screen the way a normal WS_OVERLAPPEDWINDOW
-    // does on maximize) -- there is no longer any slack for DefWindowProc's
-    // frame thickness to disappear into, so the same subtraction now carves
-    // a real, visible gap out of the TOP of the client rect. WebView2 only
-    // ever fills the client rect it is told about, so the gap shows
-    // through to the plain white default window-class background brush
-    // (registerClass's COLOR_WINDOW+1) as a white bar the full width of
-    // the window, sitting above this app's own dark custom titlebar.
-    // Fixed the same way the hidden-titlebar style already reclaims its
-    // caption band above: intercept WM_NCCALCSIZE, let DefWindowProc
-    // compute its normal frame first, then hand the top back to its
-    // pre-DefWindowProc value. Gated on IsZoomed so the restored window
-    // (which has no gap to fix) keeps DefWindowProc's default top-edge
-    // non-client area for the system's own HTTOP resize hit-testing (see
-    // the WM_NCHITTEST block right below, which still needs a real
-    // left/right/bottom non-client area for edge-drag resizing and is
-    // left untouched here). Runs before that WM_NCHITTEST block so both
+    // thickness (~7px at 96dpi) at the top even though there is no
+    // caption. On Windows 10 that reserved top band is PAINTED in the
+    // system titlebar color -- pure white on default-theme machines -- as
+    // a full-width bar above the app's own dark custom titlebar, in EVERY
+    // window state:
+    //   - restored: the band sits between the window's top edge and the
+    //     client area (verified: ClientToScreen reports a 7px top inset,
+    //     and screenshot rows 1-6 read 255,255,255 across the width);
+    //   - snapped (Win+arrow): same band, same paint;
+    //   - maximized: with the WM_GETMINMAXINFO patch above pinning the
+    //     outer rect to the work area exactly, the band additionally
+    //     carved a gap out of the client rect that exposed the white
+    //     window-class background brush.
+    // Recoloring the band instead of removing it is a dead end on
+    // Windows 10: DWMWA_CAPTION_COLOR is Windows 11 only (E_INVALIDARG on
+    // 10), and DWMWA_USE_IMMERSIVE_DARK_MODE was verified live to leave
+    // this caption-less band white. So this patch removes the top frame
+    // outright, the same way Chromium and Windows Terminal ship their
+    // frameless windows: intercept WM_NCCALCSIZE, let DefWindowProc lay
+    // out the normal frame (left/right/bottom keep their exact system
+    // metrics), then hand the TOP back to its pre-DefWindowProc value in
+    // every state. The client rect then reaches the true window top and
+    // the webview paints those pixels with the app's real titlebar
+    // colors, whatever the app theme.
+    //
+    // The trade: DefWindowProc's top band was also the HTTOP resize
+    // strip, and for a webview window the reclaimed pixels are covered by
+    // WebView2's own Chromium HWNDs, whose hit-testing never yields to
+    // the parent (unlike the SDK's canvas gpu-surface child, which
+    // forwards via HTTRANSPARENT -- that path is canvas-only). Top-edge
+    // resizing is therefore re-provided at the app layer: App.tsx renders
+    // a slim strip along the window top whose mousedown invokes the
+    // `window_start_resize` bridge command (src-zig/main.zig), which
+    // posts WM_NCLBUTTONDOWN with HTTOP/HTTOPLEFT/HTTOPRIGHT -- the same
+    // system resize loop DefWindowProc would have started from the old
+    // band. Runs before the chromeless WM_NCHITTEST block below so both
     // sit together as this app's chromeless-specific handling.
     const chromeless_topgap_needle =
         \\    /* Chromeless windows (WS_POPUP, no caption): DefWindowProc owns the
@@ -584,11 +595,11 @@ fn patchedWebview2HostSource(b: *std.Build, native_sdk_path: []const u8) std.Bui
         \\        Window *chromeless_window = chromelessWindowForHwnd(host, hwnd);
     ;
     const chromeless_topgap_replacement =
-        \\    /* Chromeless-maximized top-gap fix -- maat-native local patch, see
+        \\    /* Chromeless top-frame reclaim -- maat-native local patch, see
         \\     * patchedWebview2HostSource in build.zig for why upstream has none. */
         \\    if (message == WM_NCCALCSIZE && wparam) {
         \\        Window *chromeless_calc_window = chromelessWindowForHwnd(host, hwnd);
-        \\        if (chromeless_calc_window && IsZoomed(hwnd)) {
+        \\        if (chromeless_calc_window) {
         \\            NCCALCSIZE_PARAMS *params = reinterpret_cast<NCCALCSIZE_PARAMS *>(lparam);
         \\            const LONG original_top = params->rgrc[0].top;
         \\            const LRESULT def_result = DefWindowProcW(hwnd, WM_NCCALCSIZE, wparam, lparam);

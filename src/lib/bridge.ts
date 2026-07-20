@@ -445,6 +445,20 @@ export async function startWindowDrag(): Promise<void> {
   await invoke<Record<string, never>>("window_start_drag", {});
 }
 
+// The top-edge zone the resize gesture claims. Only top edges exist here:
+// left/right/bottom edges (and their corners) are real OS resize borders
+// on the frameless Windows window, handled natively without any JS. The
+// top border is removed at the native layer (it painted as a white bar --
+// see build.zig's chromeless top-frame reclaim patch), so App.tsx renders
+// its own strip along the window top and starts the system resize loop
+// through this command instead.
+export type TopResizeEdge = "top" | "top-left" | "top-right";
+
+export async function startWindowResize(edge: TopResizeEdge): Promise<void> {
+  if (!isNative()) return;
+  await invoke<Record<string, never>>("window_start_resize", { edge });
+}
+
 export async function minimizeWindow(): Promise<void> {
   if (!isNative()) return;
   await invoke<Record<string, never>>("window_minimize", {});
