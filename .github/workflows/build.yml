@@ -58,12 +58,13 @@ jobs:
       # Pinned exact version, not floating latest -- CI must be
       # deterministic. vercel-labs/native#72 (published npm package omitting
       # assets/, incl. assets/native-sdk.manifest, the Win32 app manifest
-      # the Windows build graph needs) was fixed upstream in 0.4.1; 0.4.3 is
-      # the latest verified-working version as of this pin. Still needed
+      # the Windows build graph needs) was fixed upstream in 0.4.1; 0.5.4 is
+      # the latest verified-working version as of this pin (all of maat's
+      # build-time SDK patches confirmed to apply byte-identically). Still needed
       # even though this job no longer runs the `native` CLI itself:
       # build.zig compiles the app against this package's SDK sources
       # (discoverNativeSdkPath resolves it via `npm root -g`).
-      - run: npm install -g @native-sdk/cli@0.4.3
+      - run: npm install -g @native-sdk/cli@0.5.4
       # Deliberately before `pnpm build`: proves the test suite stays green
       # on a checkout with no dist/ (build.zig's embeddedFrontendModule
       # generates a lazy @compileError stub there instead of failing
@@ -134,7 +135,7 @@ jobs:
           version: 0.16.0
       - run: pnpm install --frozen-lockfile
       # Pinned exact version -- see the matching comment on the windows job.
-      - run: npm install -g @native-sdk/cli@0.4.3
+      - run: npm install -g @native-sdk/cli@0.5.4
       # The correctness gate for this job: src-zig's macOS socket layer
       # (server.zig), window/reveal-path platform gates (main.zig), and
       # build.zig's macOS link step all have to actually compile and pass
@@ -146,7 +147,7 @@ jobs:
       # smoke:packaged): that script drives the app over WebView2's CDP
       # endpoint, which is WebView2-specific -- WKWebView (the macOS system
       # web engine) doesn't speak CDP, and there is no equivalent
-      # automation hook for it in @native-sdk/cli 0.4.3. `native:package:macos`
+      # automation hook for it in @native-sdk/cli 0.5.4. `native:package:macos`
       # (scripts/package-fixup.mjs's verifyMacos) still fails the build if
       # the packaged .app bundle is incomplete -- missing binary,
       # Contents/Info.plist, icon, or frontend assets under
@@ -364,13 +365,20 @@ jobs:
           else
             echo "::warning::No DMG artifact (signing secrets not configured for this run)"
           fi
+          # The .sha256 sidecars are what the in-app updater
+          # (src-zig/update.zig) verifies downloads against; generated here
+          # so they carry the final asset names.
+          sha256sum "Maat-portable-$GITHUB_REF_NAME.exe" > "Maat-portable-$GITHUB_REF_NAME.exe.sha256"
+          sha256sum "Maat-Native-macos-$GITHUB_REF_NAME.zip" > "Maat-Native-macos-$GITHUB_REF_NAME.zip.sha256"
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           ASSETS=(
             "artifacts/Maat-portable-$GITHUB_REF_NAME.exe"
+            "artifacts/Maat-portable-$GITHUB_REF_NAME.exe.sha256"
             "artifacts/Maat-Native-macos-$GITHUB_REF_NAME.zip"
+            "artifacts/Maat-Native-macos-$GITHUB_REF_NAME.zip.sha256"
           )
           [ -f "artifacts/Maat-$GITHUB_REF_NAME.dmg" ] && ASSETS+=("artifacts/Maat-$GITHUB_REF_NAME.dmg")
           gh release create "$GITHUB_REF_NAME" \

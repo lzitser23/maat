@@ -79,14 +79,19 @@ pub fn build(b: *std.Build) void {
     options.addOption(bool, "js_bridge", js_bridge_enabled);
     const options_mod = options.createModule();
 
+    const app_manifest_zon_mod = b.createModule(.{ .root_source_file = b.path("app.zon") });
+
     const runner_mod = localModule(b, target, optimize, "src-zig/runner.zig");
     runner_mod.addImport("native_sdk", native_sdk_mod);
     runner_mod.addImport("build_options", options_mod);
-    runner_mod.addImport("app_manifest_zon", b.createModule(.{ .root_source_file = b.path("app.zon") }));
+    runner_mod.addImport("app_manifest_zon", app_manifest_zon_mod);
 
     const app_mod = localModule(b, target, optimize, "src-zig/main.zig");
     app_mod.addImport("native_sdk", native_sdk_mod);
     app_mod.addImport("runner", runner_mod);
+    // update.zig reads the manifest version to compare against GitHub's
+    // latest release tag.
+    app_mod.addImport("app_manifest_zon", app_manifest_zon_mod);
 
     // The frontend build, compiled straight into the binary (one @embedFile
     // per dist/ file) and served back to the webview by
@@ -467,7 +472,7 @@ fn patchedWebview2HostSource(b: *std.Build, native_sdk_path: []const u8) std.Bui
     // requested position exactly the way outer_width/outer_height land
     // its size there (for the chromeless WS_POPUP style this app uses,
     // AdjustWindowRectEx leaves frame.left/top at 0, so this reduces to
-    // plain window.x/window.y). Still broken as of 0.4.3.
+    // plain window.x/window.y). Still broken as of 0.5.4.
     const position_needle =
         \\        style,
         \\        CW_USEDEFAULT,
@@ -500,7 +505,7 @@ fn patchedWebview2HostSource(b: *std.Build, native_sdk_path: []const u8) std.Bui
     // second toggle call "restores" a window that was never truly
     // maximized. Supplying the monitor's work-area rect explicitly here
     // is the standard fix for maximizing a caption-less popup window.
-    // Still broken as of 0.4.3. This patch and the ptMinTrackSize dedup
+    // Still broken as of 0.5.4. This patch and the ptMinTrackSize dedup
     // patch right after it are coupled: the dedup only has anything to do
     // if this one actually ran (see maxinfo_applied below).
     const maxinfo_needle =

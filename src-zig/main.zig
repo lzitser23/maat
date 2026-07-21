@@ -6,6 +6,7 @@ const server_mod = @import("server.zig");
 const embedded_frontend_server_mod = @import("embedded_frontend_server");
 const storage_mod = @import("storage.zig");
 const ingest_mod = @import("ingest.zig");
+const update_mod = @import("update.zig");
 
 pub const panic = std.debug.FullPanic(native_sdk.debug.capturePanic);
 
@@ -41,7 +42,7 @@ const app_origins = [_][]const u8{
 // server, the import job registry, and `reveal_path`, a pure OS side effect
 // with no storage involvement).
 const domain_handler_count = 18;
-const shell_handler_count = 14;
+const shell_handler_count = 20;
 const handler_count = domain_handler_count + shell_handler_count;
 
 // ---- Import job registry -------------------------------------------------
@@ -277,6 +278,10 @@ const App = struct {
     /// instance is process-lifetime, so a field is always safe.
     embedded_frontend_url_buf: [64]u8 = undefined,
     jobs: JobRegistry = .{},
+    /// Byte counters for the (single) in-flight update download —
+    /// `update_download_start` refuses a second one while this is set.
+    update_progress: update_mod.Progress = .{},
+    update_download_active: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     handlers: [handler_count]bridge.Handler = undefined,
     policies: [handler_count]bridge.CommandPolicy = undefined,
 
@@ -434,6 +439,21 @@ const App = struct {
         self.handlers[i] = .{ .name = "import_clipboard_start", .context = self, .invoke_fn = importClipboardStart };
         i += 1;
         self.handlers[i] = .{ .name = "import_job_status", .context = self, .invoke_fn = importJobStatus };
+        i += 1;
+        self.handlers[i] = .{ .name = "update_check_start", .context = self, .invoke_fn = updateCheckStart };
+        i += 1;
+        self.handlers[i] = .{ .name = "update_download_start", .context = self, .invoke_fn = updateDownloadStart };
+        i += 1;
+        // Update jobs live in the same JobRegistry as imports and their
+        // results poll identically, so the status command IS
+        // importJobStatus under a name bridge.ts can read honestly.
+        self.handlers[i] = .{ .name = "update_job_status", .context = self, .invoke_fn = importJobStatus };
+        i += 1;
+        self.handlers[i] = .{ .name = "update_progress", .context = self, .invoke_fn = updateProgress };
+        i += 1;
+        self.handlers[i] = .{ .name = "update_apply", .context = self, .invoke_fn = updateApply };
+        i += 1;
+        self.handlers[i] = .{ .name = "update_recovery_error", .context = self, .invoke_fn = updateRecoveryError };
         i += 1;
         std.debug.assert(i == handler_count);
 
@@ -1603,6 +1623,230 @@ fn importClipboardStart(context: *anyopaque, invocation: bridge.Invocation, outp
     return std.fmt.bufPrint(output, "{{\"jobId\":\"{s}\"}}", .{slot.id});
 }
 
+// ---- Update commands -------------------------------------------------------
+//
+// Same job-worker shape as the imports above: the bridge dispatches
+// synchronously on the UI thread, so the GitHub release check and the
+// package download (both network-bound) each run on a worker thread and the
+// frontend polls `update_job_status` (the importJobStatus handler under an
+// honest name). The blocking work itself lives in update.zig.
+
+const UpdateCheckJobArgs = struct {
+    allocator: std.mem.Allocator,
+    jobs: *JobRegistry,
+    slot: *JobSlot,
+};
+
+fn runUpdateCheckJob(args: *UpdateCheckJobArgs) void {
+    defer args.allocator.destroy(args);
+
+    var arena = std.heap.ArenaAllocator.init(args.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var io_threaded: std.Io.Threaded = .init_single_threaded;
+    const io = io_threaded.io();
+
+    const info = update_mod.checkLatest(a, io) catch |err| {
+        finishJobError(args.jobs, args.slot, @errorName(err));
+        return;
+    };
+
+    const json_tmp = blk: {
+        if (info) |i| {
+            const info_json = i.toJson(a) catch {
+                finishJobError(args.jobs, args.slot, "OutOfMemory");
+                return;
+            };
+            break :blk std.fmt.allocPrint(a, "{{\"update\":{s}}}", .{info_json}) catch {
+                finishJobError(args.jobs, args.slot, "OutOfMemory");
+                return;
+            };
+        }
+        break :blk a.dupe(u8, "{\"update\":null}") catch {
+            finishJobError(args.jobs, args.slot, "OutOfMemory");
+            return;
+        };
+    };
+    const json_owned = args.allocator.dupe(u8, json_tmp) catch {
+        finishJobError(args.jobs, args.slot, "OutOfMemory");
+        return;
+    };
+    finishJobReport(args.jobs, args.slot, json_owned);
+}
+
+const UpdateDownloadJobArgs = struct {
+    allocator: std.mem.Allocator,
+    app: *App,
+    slot: *JobSlot,
+    asset_name: []u8,
+    download_url: []u8,
+    checksum_url: []u8,
+};
+
+fn runUpdateDownloadJob(args: *UpdateDownloadJobArgs) void {
+    defer {
+        args.app.update_download_active.store(false, .release);
+        args.allocator.free(args.asset_name);
+        args.allocator.free(args.download_url);
+        args.allocator.free(args.checksum_url);
+        args.allocator.destroy(args);
+    }
+
+    var arena = std.heap.ArenaAllocator.init(args.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var io_threaded: std.Io.Threaded = .init_single_threaded;
+    const io = io_threaded.io();
+
+    const staged = update_mod.downloadAndStage(
+        a,
+        io,
+        args.app.storage_root,
+        args.asset_name,
+        args.download_url,
+        args.checksum_url,
+        &args.app.update_progress,
+    ) catch |err| {
+        finishJobError(&args.app.jobs, args.slot, @errorName(err));
+        return;
+    };
+
+    const json_tmp = std.json.Stringify.valueAlloc(a, .{ .stagedPath = staged }, .{}) catch {
+        finishJobError(&args.app.jobs, args.slot, "OutOfMemory");
+        return;
+    };
+    const json_owned = args.allocator.dupe(u8, json_tmp) catch {
+        finishJobError(&args.app.jobs, args.slot, "OutOfMemory");
+        return;
+    };
+    finishJobReport(&args.app.jobs, args.slot, json_owned);
+}
+
+fn updateCheckStart(context: *anyopaque, invocation: bridge.Invocation, output: []u8) anyerror![]const u8 {
+    _ = invocation;
+    const self: *App = @ptrCast(@alignCast(context));
+
+    const slot = self.jobs.reserve() orelse return error.TooManyJobs;
+
+    const job_args = try self.allocator.create(UpdateCheckJobArgs);
+    errdefer self.allocator.destroy(job_args);
+    job_args.* = .{ .allocator = self.allocator, .jobs = &self.jobs, .slot = slot };
+
+    // See the NOTE above `runPathsJob`'s spawn: a panic here also kills the
+    // process (accepted, not fixed), and the thread is joined (not
+    // detached) by `JobRegistry.drain` on shutdown.
+    const thread = try std.Thread.spawn(.{}, runUpdateCheckJob, .{job_args});
+    self.jobs.attachThread(slot, thread);
+
+    return std.fmt.bufPrint(output, "{{\"jobId\":\"{s}\"}}", .{slot.id});
+}
+
+fn updateDownloadStart(context: *anyopaque, invocation: bridge.Invocation, output: []u8) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(context));
+
+    var arena = std.heap.ArenaAllocator.init(self.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const Args = struct { assetName: []const u8, downloadUrl: []const u8, checksumUrl: []const u8 };
+    const args = try parsePayload(Args, a, invocation.request.payload);
+
+    // Validate up front so a bad payload fails the command itself instead of
+    // surfacing one poll later (the worker re-validates before using them).
+    try update_mod.validateAssetName(args.assetName);
+    try update_mod.validateDownloadUrl(args.downloadUrl);
+    try update_mod.validateDownloadUrl(args.checksumUrl);
+
+    if (self.update_download_active.cmpxchgStrong(false, true, .acquire, .monotonic) != null)
+        return error.UpdateAlreadyRunning;
+    errdefer self.update_download_active.store(false, .release);
+    self.update_progress.reset();
+
+    const slot = self.jobs.reserve() orelse return error.TooManyJobs;
+
+    const asset_name = try self.allocator.dupe(u8, args.assetName);
+    errdefer self.allocator.free(asset_name);
+    const download_url = try self.allocator.dupe(u8, args.downloadUrl);
+    errdefer self.allocator.free(download_url);
+    const checksum_url = try self.allocator.dupe(u8, args.checksumUrl);
+    errdefer self.allocator.free(checksum_url);
+
+    const job_args = try self.allocator.create(UpdateDownloadJobArgs);
+    errdefer self.allocator.destroy(job_args);
+    job_args.* = .{
+        .allocator = self.allocator,
+        .app = self,
+        .slot = slot,
+        .asset_name = asset_name,
+        .download_url = download_url,
+        .checksum_url = checksum_url,
+    };
+
+    // See the NOTE above `runPathsJob`'s spawn (panic caveat + joined on
+    // shutdown via `JobRegistry.drain`).
+    const thread = try std.Thread.spawn(.{}, runUpdateDownloadJob, .{job_args});
+    self.jobs.attachThread(slot, thread);
+
+    return std.fmt.bufPrint(output, "{{\"jobId\":\"{s}\"}}", .{slot.id});
+}
+
+fn updateProgress(context: *anyopaque, invocation: bridge.Invocation, output: []u8) anyerror![]const u8 {
+    _ = invocation;
+    const self: *App = @ptrCast(@alignCast(context));
+    const downloaded = self.update_progress.downloaded.load(.monotonic);
+    const total = self.update_progress.total.load(.monotonic);
+    if (total == 0) {
+        return std.fmt.bufPrint(output, "{{\"downloadedBytes\":{d},\"totalBytes\":null}}", .{downloaded});
+    }
+    return std.fmt.bufPrint(output, "{{\"downloadedBytes\":{d},\"totalBytes\":{d}}}", .{ downloaded, total });
+}
+
+fn updateApply(context: *anyopaque, invocation: bridge.Invocation, output: []u8) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(context));
+    const runtime = self.runtime orelse return error.RuntimeUnavailable;
+
+    var arena = std.heap.ArenaAllocator.init(self.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const Args = struct { updatePath: []const u8 };
+    const args = try parsePayload(Args, a, invocation.request.payload);
+
+    var io_threaded: std.Io.Threaded = .init_single_threaded;
+    const io = io_threaded.io();
+
+    // Writes the swap script and spawns it detached — file-system + spawn
+    // work only, so running it on the bridge thread is fine.
+    try update_mod.applyStaged(a, io, self.storage_root, args.updatePath);
+
+    // The swap script waits for this pid; closing the (only) window is the
+    // app's normal exit path, same as window_close.
+    try runtime.closeWindow(invocation.source.window_id);
+    return std.fmt.bufPrint(output, "{{}}", .{});
+}
+
+fn updateRecoveryError(context: *anyopaque, invocation: bridge.Invocation, output: []u8) anyerror![]const u8 {
+    _ = invocation;
+    const self: *App = @ptrCast(@alignCast(context));
+
+    var arena = std.heap.ArenaAllocator.init(self.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var io_threaded: std.Io.Threaded = .init_single_threaded;
+    const io = io_threaded.io();
+
+    const message = try update_mod.takeRecoveryError(a, io, self.storage_root);
+    if (message) |msg| {
+        var scratch: [4096]u8 = undefined;
+        const quoted = bridge.writeJsonStringValue(&scratch, msg);
+        return std.fmt.bufPrint(output, "{{\"error\":{s}}}", .{quoted});
+    }
+    return std.fmt.bufPrint(output, "{{\"error\":null}}", .{});
+}
+
 fn importJobStatus(context: *anyopaque, invocation: bridge.Invocation, output: []u8) anyerror![]const u8 {
     const self: *App = @ptrCast(@alignCast(context));
 
@@ -1713,6 +1957,7 @@ pub fn main(init: std.process.Init) !void {
 test {
     _ = @import("ingest.zig");
     _ = @import("storage.zig");
+    _ = @import("update.zig");
     // Only the platform-neutral request-path/mime helpers carry tests in
     // there; nothing test-reachable touches the embedded `entries`, so
     // this stays green on a fresh checkout where dist/ hasn't been built
