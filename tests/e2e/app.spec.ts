@@ -423,6 +423,34 @@ test("wheel pans, ctrl+wheel zooms, and explicit inspector metadata work", async
   await expect(page.getByText("https://example.com/maat")).toBeVisible();
 });
 
+test("trackpad pinch (WebKit gesture events) zooms the canvas", async ({ page }) => {
+  // macOS WKWebView delivers pinch as gesturestart/change/end, never ctrl+wheel. Chromium can't
+  // produce the real thing, so dispatch synthetic events carrying the same scale/clientX/clientY
+  // payload the canvas listener reads.
+  const zoom = page.getByLabel("Zoom");
+  const startingZoom = Number(await zoom.inputValue());
+  await page.evaluate(() => {
+    const canvas = document.querySelector('[data-testid="maat-canvas"]');
+    if (!canvas) throw new Error("canvas not found");
+    const rect = canvas.getBoundingClientRect();
+    const fire = (type: string, scale: number) => {
+      const event = new Event(type, { bubbles: true, cancelable: true }) as Event & {
+        scale: number;
+        clientX: number;
+        clientY: number;
+      };
+      event.scale = scale;
+      event.clientX = rect.left + rect.width / 2;
+      event.clientY = rect.top + rect.height / 2;
+      canvas.dispatchEvent(event);
+    };
+    fire("gesturestart", 1);
+    fire("gesturechange", 1.5);
+    fire("gestureend", 1.5);
+  });
+  await expect.poll(async () => Number(await zoom.inputValue())).toBeGreaterThan(startingZoom);
+});
+
 test("Inspector shows a Caption section for an asset that has one, and omits it otherwise", async ({ page }) => {
   const withCaption = await cardCenter(page, "Palette capture");
   await page.mouse.click(withCaption.x, withCaption.y);

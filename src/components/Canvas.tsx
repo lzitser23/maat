@@ -146,6 +146,50 @@ export function Canvas({
     viewportRef.current = { scale, offsetX, offsetY };
   }, [offsetX, offsetY, scale]);
 
+  // macOS WKWebView reports trackpad pinch as WebKit's proprietary gesturestart/change/end events,
+  // not the ctrl+wheel Chromium synthesizes — without these listeners pinch does nothing on the
+  // board while Excalidraw (which subscribes to them) still zooms in drawing mode. Chromium never
+  // fires them, so this is inert on Windows. React has no onGestureChange prop; attach natively.
+  useEffect(() => {
+    const element = canvasRef.current;
+    if (!element || drawingMode) return;
+
+    type WebKitGestureEvent = Event & { scale: number; clientX: number; clientY: number };
+    // Cumulative pinch scale is relative to the gesture's start; 0 doubles as "no active gesture".
+    let baseScale = 0;
+
+    const handleStart = (event: Event) => {
+      if (event.target instanceof Element && event.target.closest("[data-model-viewer]")) return;
+      event.preventDefault();
+      baseScale = viewportRef.current.scale;
+    };
+    const handleChange = (event: Event) => {
+      if (baseScale === 0) return;
+      event.preventDefault();
+      const gesture = event as WebKitGestureEvent;
+      const current = viewportRef.current;
+      const rect = element.getBoundingClientRect();
+      const nextScale = clamp(baseScale * gesture.scale, MIN_SCALE, MAX_SCALE);
+      const pointer = { x: gesture.clientX - rect.left, y: gesture.clientY - rect.top };
+      const worldX = (pointer.x - current.offsetX) / current.scale;
+      const worldY = (pointer.y - current.offsetY) / current.scale;
+      onViewportChange(nextScale, pointer.x - worldX * nextScale, pointer.y - worldY * nextScale);
+    };
+    const handleEnd = (event: Event) => {
+      event.preventDefault();
+      baseScale = 0;
+    };
+
+    element.addEventListener("gesturestart", handleStart);
+    element.addEventListener("gesturechange", handleChange);
+    element.addEventListener("gestureend", handleEnd);
+    return () => {
+      element.removeEventListener("gesturestart", handleStart);
+      element.removeEventListener("gesturechange", handleChange);
+      element.removeEventListener("gestureend", handleEnd);
+    };
+  }, [drawingMode, onViewportChange]);
+
   useEffect(() => {
     lastDrawingJsonRef.current = drawingJson;
     setDrawingElementCount(countLiveDrawingElements(drawingElements));
