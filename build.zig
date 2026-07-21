@@ -138,6 +138,20 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .windows and optimize != .Debug) {
         exe.subsystem = .windows;
     }
+    // The app icon, embedded as a Win32 resource so Explorer and the
+    // taskbar show the Maat logo instead of the generic exe icon. Neither
+    // the SDK's build graph nor the retired `native package` flow ever
+    // embedded one (packaging only copied app-icon.ico as a SIBLING file
+    // into the artifact folder -- see @native-sdk/cli's
+    // src/tooling/package.zig windowsIcon path -- which the single-file
+    // portable exe no longer ships). Zig's bundled resinator compiles the
+    // .rc; see assets/windows-app.rc for the icon group layout and how
+    // assets/icon.ico regenerates from assets/icon.png. All Windows
+    // builds get it, Debug included -- the icon has no subsystem/console
+    // interaction.
+    if (target.result.os.tag == .windows) {
+        app_mod.addWin32ResourceFile(.{ .file = b.path("assets/windows-app.rc") });
+    }
     linkPlatform(b, target, app_mod, exe, selected_platform, web_engine, native_sdk_path, cef_dir, cef_auto_install);
     b.installArtifact(exe);
 
