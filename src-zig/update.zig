@@ -251,7 +251,7 @@ fn fetchBytes(
     var transfer_buffer: [4096]u8 = undefined;
     const body_reader = response.reader(&transfer_buffer);
 
-    var bytes = std.ArrayList(u8){};
+    var bytes: std.ArrayList(u8) = .empty;
     defer bytes.deinit(allocator);
     var chunk: [64 * 1024]u8 = undefined;
     while (true) {
