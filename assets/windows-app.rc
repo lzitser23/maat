@@ -1,0 +1,17 @@
+// Win32 resource script for the portable Windows exe, compiled into the
+// binary by build.zig's addWin32ResourceFile (Zig's bundled resinator --
+// no rc.exe needed). The retired `native package` flow never embedded a
+// PE icon either (it only copied app-icon.ico as a sibling file into the
+// artifact folder, see @native-sdk/cli's src/tooling/package.zig), so
+// without this the exe shows the generic executable icon in Explorer and
+// the taskbar.
+//
+// Ordinal 1 keeps this the FIRST icon group by lowest ID -- what Explorer
+// and the taskbar pick when they fall back to the exe's resources.
+//
+// assets/icon.ico is generated from assets/icon.png (the app.zon icon
+// source) as a 7-entry multi-size ICO -- 16/24/32/48/64/128/256, each
+// stored PNG-compressed. Regenerate after changing icon.png with:
+//
+//   python -c "from PIL import Image; im = Image.open('assets/icon.png').convert('RGBA'); im.save('assets/icon.ico', format='ICO', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+1 ICON "icon.ico"
