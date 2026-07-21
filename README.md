@@ -31,7 +31,7 @@
 
 **Maat** is a desktop app for **Windows and macOS** for collecting project assets on a freeform infinite canvas — images, screenshots, 3D models, files, fonts, PDFs, and whole [Eagle](https://eagle.cool) `.library` folders — arranged the way you think. Each collection is a local **board**; drop things in, move them around, sketch on top, and find them later.
 
-It's built to feel native and instant: a **Zig + SQLite** engine (via the [Native SDK](https://github.com/vercel-labs/native)) owns import, hashing, thumbnails, and persistence, while the UI stays fast and iterative in **React 19 + TypeScript**. The product boundary is strictly local-first — no account, no cloud backend, no telemetry. Your library lives on disk at `%APPDATA%\MaatNative` on Windows and `~/Library/Application Support/MaatNative` on macOS (see [Storage](#storage)) and nothing leaves the machine, save one thing you ask for: pasting or dropping an image URL downloads that one image.
+It's built to feel native and instant: a **Zig + SQLite** engine (via the [Native SDK](https://github.com/vercel-labs/native)) owns import, hashing, thumbnails, and persistence, while the UI stays fast and iterative in **React 19 + TypeScript**. The product boundary is strictly local-first — no account, no cloud backend, no telemetry. Your library lives on disk at `%APPDATA%\MaatNative` on Windows and `~/Library/Application Support/MaatNative` on macOS (see [Storage](#storage)) and nothing leaves the machine, save two things you ask for: pasting or dropping an image URL downloads that one image, and the launch-time update check asks GitHub whether a newer release exists (version metadata only — it never sends anything about you or your library, and failures are silent).
 
 ---
 
@@ -39,16 +39,18 @@ It's built to feel native and instant: a **Zig + SQLite** engine (via the [Nativ
 
 - **Infinite canvas** — freeform pan and zoom, drag assets anywhere, double-click to spotlight one in detail, and a bottom-left minimap to jump around large boards.
 - **Local boards** — create as many boards as you like (one per project or collection) and switch between them instantly; everything is stored locally.
-- **Import anything** — individual files, whole folders (imported recursively), Eagle `.library` folders (with their tags, folders, notes, and source URLs), OS drag-and-drop, remote image URLs, and clipboard paste.
+- **Import anything** — individual files, whole folders (imported recursively), Eagle `.library` folders (with their tags, folders, notes, and source URLs), OS drag-and-drop, remote image URLs, and clipboard paste. AI training datasets import cleanly: a `.txt` sharing an image's name becomes that image's **caption** instead of a stray text asset.
 - **Managed, deduped storage** — imports are copied into a content-addressed local store and de-duplicated per board by SHA-256 hash, so libraries stay portable and never break on moved originals.
 - **3D models** — import `.glb`/`.gltf` files like any asset: they get real rendered thumbnails on the board, and spotlighting one opens a Sketchfab-style orbit viewer (drag to rotate, scroll to zoom — confined to the card, so the canvas stays put).
 - **Thumbnails** — fast generated previews for images and 3D models, with graceful fallback icons for video, audio, PDF, fonts, design files, and archives.
-- **Three view modes** — **Canvas** (the freeform default), **Grid** (a scrollable masonry that never touches your manual layout), and **Infinity** (immersive: chrome hidden, spotlight shows the asset's name and dimensions; `Esc` exits).
+- **Three view modes** — **Canvas** (the freeform default), **Grid** (a scrollable masonry that never touches your manual layout), and **Infinity** (immersive: chrome hidden, spotlight shows the asset's name and dimensions). `Esc` always exits a focused asset first, then the mode.
+- **Captions & prompts in the Inspector** — dataset captions imported from sidecar `.txt` files show read-only per asset, and a free-form **Prompt** field lets you keep the generation prompt with an AI-generated image — both stored locally in the catalog.
 - **Drawing mode** — an [Excalidraw](https://excalidraw.com) layer over each board for freehand sketching and annotation, saved per board.
 - **Trash + undo/redo** — soft-delete to Trash, and undo/redo for both canvas layout and trashing (`Ctrl/Cmd+Z` / `Ctrl/Cmd+Shift+Z`).
 - **Search + scopes** — search names, types, tags, folders, notes, and source URLs (`Ctrl/Cmd+K`); filter by All / Inbox / Trash, by import source folder, or by tag.
 - **Auto-arrange** — tidy the current selection or scope into a clean masonry layout without destroying your manual placement.
 - **Native, small, and yours** — a frameless native window with a custom titlebar, dark/light themes, and a single ~20 MB portable exe on Windows (frontend and WebView2 loader embedded — no installer, no sibling files).
+- **Keeps itself current** — a titlebar pill appears when a newer release is out; one click downloads it (SHA-256-verified against the release's sidecar), swaps the install, and relaunches. Right-click dismisses that version; update failures roll back and are reported once.
 
 ---
 
@@ -63,6 +65,8 @@ Tagged versions (`v*`) publish to [**Releases**](https://github.com/lzitser23/ma
 | macOS | `Maat-vX.Y.Z.dmg` | Signed + notarized — open the DMG and drag **Maat** to **Applications** |
 | macOS | `Maat-Native-macos-vX.Y.Z.zip` | The same signed, notarized `.app`, zipped |
 | Windows | `Maat-portable-vX.Y.Z.exe` | Portable single file — download anywhere and double-click; nothing to unzip or install |
+
+Each release also carries `.sha256` sidecars for the exe and the macOS zip — the in-app updater verifies downloads against them, and you can too.
 
 ### Download a CI build
 
