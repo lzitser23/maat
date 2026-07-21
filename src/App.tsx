@@ -58,6 +58,13 @@ import {
 import type { ClipboardImportItem } from "./lib/bridge";
 import { confirmDialog } from "./lib/dialog";
 import { arrangeNodes, fitViewport } from "./lib/layout";
+import {
+  checkForUpdate,
+  dismissUpdate,
+  downloadAndInstall,
+  takeUpdateRecoveryError,
+  type UpdateInfo,
+} from "./lib/update";
 import { queueModelThumbnails } from "./lib/modelThumbs";
 import { filteredAssets, filteredNodes, scopeLabel } from "./lib/scope";
 import { selectedAssets, useAppStore } from "./store";
@@ -139,6 +146,42 @@ export default function App() {
     document.documentElement.classList.toggle("dark", theme === "dark");
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  // One release check per launch; silent on every failure (offline,
+  // rate-limited, no releases yet) — an update check must never surface an
+  // error. A failed swap from a previous update is the exception: its
+  // recovery marker is reported once through the status line.
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [updating, setUpdating] = useState<string | null>(null);
+  useEffect(() => {
+    void takeUpdateRecoveryError().then((error) => {
+      if (error) setStatus(error);
+    });
+    checkForUpdate().then(setUpdate, () => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const runSelfUpdate = useCallback(
+    async (info: UpdateInfo) => {
+      setUpdating("starting…");
+      try {
+        await downloadAndInstall(info, (progress) => {
+          if (!progress) {
+            setUpdating("restarting…");
+          } else if (progress.totalBytes) {
+            setUpdating(`downloading… ${Math.round((progress.downloadedBytes / progress.totalBytes) * 100)}%`);
+          } else {
+            setUpdating(`downloading… ${(progress.downloadedBytes / 1048576).toFixed(1)} MB`);
+          }
+        });
+        // On success update_apply closes the app — anything after is failure-only.
+      } catch (error) {
+        setUpdating(null);
+        setStatus(`Update failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+    [setStatus],
+  );
 
   // 3D models import with previewStatus "fallback" (the engine can't rasterize them);
   // render their thumbnails here in the webview, one at a time, and patch results in.
@@ -1060,6 +1103,22 @@ export default function App() {
                   <Trash2 className="h-4 w-4" />
                 </Button>
               )
+            )}
+            {update && (
+              <Button
+                variant="secondary"
+                size="sm"
+                title={updating ?? `Download and install Maat ${update.version} — right-click to dismiss`}
+                disabled={updating !== null}
+                onClick={() => void runSelfUpdate(update)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  dismissUpdate(update.version);
+                  setUpdate(null);
+                }}
+              >
+                {updating ?? `${update.version} available`}
+              </Button>
             )}
             <Button variant="ghost" size="icon" title="Toggle theme" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
