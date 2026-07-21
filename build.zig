@@ -79,14 +79,19 @@ pub fn build(b: *std.Build) void {
     options.addOption(bool, "js_bridge", js_bridge_enabled);
     const options_mod = options.createModule();
 
+    const app_manifest_zon_mod = b.createModule(.{ .root_source_file = b.path("app.zon") });
+
     const runner_mod = localModule(b, target, optimize, "src-zig/runner.zig");
     runner_mod.addImport("native_sdk", native_sdk_mod);
     runner_mod.addImport("build_options", options_mod);
-    runner_mod.addImport("app_manifest_zon", b.createModule(.{ .root_source_file = b.path("app.zon") }));
+    runner_mod.addImport("app_manifest_zon", app_manifest_zon_mod);
 
     const app_mod = localModule(b, target, optimize, "src-zig/main.zig");
     app_mod.addImport("native_sdk", native_sdk_mod);
     app_mod.addImport("runner", runner_mod);
+    // update.zig reads the manifest version to compare against GitHub's
+    // latest release tag.
+    app_mod.addImport("app_manifest_zon", app_manifest_zon_mod);
 
     // The frontend build, compiled straight into the binary (one @embedFile
     // per dist/ file) and served back to the webview by

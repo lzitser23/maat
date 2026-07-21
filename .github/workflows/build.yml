@@ -364,13 +364,20 @@ jobs:
           else
             echo "::warning::No DMG artifact (signing secrets not configured for this run)"
           fi
+          # The .sha256 sidecars are what the in-app updater
+          # (src-zig/update.zig) verifies downloads against; generated here
+          # so they carry the final asset names.
+          sha256sum "Maat-portable-$GITHUB_REF_NAME.exe" > "Maat-portable-$GITHUB_REF_NAME.exe.sha256"
+          sha256sum "Maat-Native-macos-$GITHUB_REF_NAME.zip" > "Maat-Native-macos-$GITHUB_REF_NAME.zip.sha256"
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           ASSETS=(
             "artifacts/Maat-portable-$GITHUB_REF_NAME.exe"
+            "artifacts/Maat-portable-$GITHUB_REF_NAME.exe.sha256"
             "artifacts/Maat-Native-macos-$GITHUB_REF_NAME.zip"
+            "artifacts/Maat-Native-macos-$GITHUB_REF_NAME.zip.sha256"
           )
           [ -f "artifacts/Maat-$GITHUB_REF_NAME.dmg" ] && ASSETS+=("artifacts/Maat-$GITHUB_REF_NAME.dmg")
           gh release create "$GITHUB_REF_NAME" \
