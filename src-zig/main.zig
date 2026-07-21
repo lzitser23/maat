@@ -31,16 +31,17 @@ const app_origins = [_][]const u8{
     "http://127.0.0.1:1499",
 } ++ embedded_frontend_server_mod.origins;
 
-// 17 domain commands (COMMAND-CONTRACT.md's original 14, ported 1:1 with
+// 18 domain commands (COMMAND-CONTRACT.md's original 14, ported 1:1 with
 // the deliberate delete_board cascade fix from INTERFACE.md item 1, plus
 // `load_board_page` and `list_boards_state` -- issue #4's bounded-response
 // board pagination, plus `set_asset_thumbnail` -- webview-rendered previews
-// for kinds the engine can't decode, e.g. 3D models) onto the Storage/ingest
+// for kinds the engine can't decode, e.g. 3D models, plus `set_asset_prompt`
+// -- the user-editable AI-generation prompt field) onto the Storage/ingest
 // layers, plus 13 shell commands (window chrome, dialogs, the local file
 // server, the import job registry, and `reveal_path`, a pure OS side effect
 // with no storage involvement).
-const domain_handler_count = 17;
-const shell_handler_count = 13;
+const domain_handler_count = 18;
+const shell_handler_count = 14;
 const handler_count = domain_handler_count + shell_handler_count;
 
 // ---- Import job registry -------------------------------------------------
@@ -404,6 +405,8 @@ const App = struct {
         i += 1;
         self.handlers[i] = .{ .name = "set_asset_thumbnail", .context = self, .invoke_fn = setAssetThumbnail };
         i += 1;
+        self.handlers[i] = .{ .name = "set_asset_prompt", .context = self, .invoke_fn = setAssetPrompt };
+        i += 1;
         self.handlers[i] = .{ .name = "reveal_path", .context = self, .invoke_fn = revealPath };
         i += 1;
         self.handlers[i] = .{ .name = "window_minimize", .context = self, .invoke_fn = windowMinimize };
@@ -413,6 +416,8 @@ const App = struct {
         self.handlers[i] = .{ .name = "window_close", .context = self, .invoke_fn = windowClose };
         i += 1;
         self.handlers[i] = .{ .name = "window_start_drag", .context = self, .invoke_fn = windowStartDrag };
+        i += 1;
+        self.handlers[i] = .{ .name = "window_start_resize", .context = self, .invoke_fn = windowStartResize };
         i += 1;
         self.handlers[i] = .{ .name = "dialog_open_files", .context = self, .invoke_fn = dialogOpenFiles };
         i += 1;
@@ -742,6 +747,21 @@ fn setAssetThumbnail(context: *anyopaque, invocation: bridge.Invocation, output:
     return copyJsonOrSpill(self, output, json);
 }
 
+fn setAssetPrompt(context: *anyopaque, invocation: bridge.Invocation, output: []u8) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(context));
+    const storage = try self.storagePtr();
+
+    var arena = std.heap.ArenaAllocator.init(self.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const Args = struct { boardId: []const u8, assetId: []const u8, prompt: []const u8 };
+    const args = try parsePayload(Args, a, invocation.request.payload);
+
+    const asset = storage.setAssetPrompt(a, args.boardId, args.assetId, args.prompt) catch |err| return mapStorageError(err);
+    return copyJsonOrSpill(self, output, try asset.toJson(a));
+}
+
 fn purgeAssets(context: *anyopaque, invocation: bridge.Invocation, output: []u8) anyerror![]const u8 {
     _ = output;
     const self: *App = @ptrCast(@alignCast(context));
@@ -869,12 +889,84 @@ fn windowClose(context: *anyopaque, invocation: bridge.Invocation, output: []u8)
 }
 
 fn windowStartDrag(context: *anyopaque, invocation: bridge.Invocation, output: []u8) anyerror![]const u8 {
+    if (builtin.os.tag == .windows) {
+        // The SDK seam below is a silent no-op on Windows for webview
+        // apps: native_sdk_windows_start_window_drag (webview2_host.cpp)
+        // only posts its caption-drag when a CANVAS gpu-surface view of
+        // this window holds a live pointer press (view.gpu_pointer_down),
+        // and a webview-shell app has no gpu-surface views at all -- so
+        // `pressed` is never found and the call "succeeds" without doing
+        // anything. Verified live against the built app: the mousedown
+        // reaches the page, the bridge dispatch lands and returns {}, and
+        // the window never moves. So on Windows the drag is started here
+        // directly, the standard frameless-WebView2 pattern (and exactly
+        // what the SDK's own code posts when its canvas gate passes):
+        // hand the still-held physical press to the system move loop via
+        // WM_NCLBUTTONDOWN/HTCAPTION. Posted, not sent -- the move loop
+        // is modal and must not run inside this bridge dispatch. The
+        // ReleaseCapture first is the same courtesy the SDK's path does:
+        // whoever captured the mouse for the press (here WebView2's
+        // renderer) must lose it before the move loop can take over.
+        try startWindowsNcGesture(HTCAPTION);
+        return std.fmt.bufPrint(output, "{{}}", .{});
+    }
     const self: *App = @ptrCast(@alignCast(context));
     const runtime = self.runtime orelse return error.RuntimeUnavailable;
     // No JS-visible verb or Runtime method exists for starting a window
     // drag (see MIGRATION-BRIEF.md section 4) -- this reaches into the
     // platform services seam the framework's own canvas-widget code uses.
     try runtime.options.platform.services.startWindowDrag(invocation.source.window_id);
+    return std.fmt.bufPrint(output, "{{}}", .{});
+}
+
+/// Starts the system's modal move/size loop for the app's own window,
+/// keyed by a non-client hit-test code: HTCAPTION begins the move loop,
+/// HTTOP/HTTOPLEFT/HTTOPRIGHT begin the matching resize loop. Both loops
+/// track the physical mouse button the user is already holding (the
+/// bridge command that lands here is invoked from a JS mousedown), so if
+/// the button was released before this dispatch arrived the loop starts
+/// and exits immediately -- no stuck-drag state is possible.
+fn startWindowsNcGesture(hit_test: usize) !void {
+    const hwnd = findOwnHostWindow() orelse user32.GetForegroundWindow() orelse user32.GetActiveWindow() orelse return error.WindowUnavailable;
+    _ = user32.ReleaseCapture();
+    _ = user32.PostMessageW(hwnd, WM_NCLBUTTONDOWN, hit_test, 0);
+}
+
+/// Top-edge resize for the chromeless Windows window. build.zig's
+/// chromeless top-frame reclaim patch (see patchedWebview2HostSource)
+/// removes DefWindowProc's top resize band -- the pixels that used to
+/// answer HTTOP are now client area covered by WebView2, whose Chromium
+/// HWNDs never yield hit-testing to the parent window. App.tsx renders a
+/// slim strip along the window top instead and calls this command from
+/// its mousedown; posting WM_NCLBUTTONDOWN with the matching hit-test
+/// code starts the exact system resize loop the old band would have.
+/// Left/right/bottom edges and their corners still use DefWindowProc's
+/// real borders and never come through here.
+fn windowStartResize(context: *anyopaque, invocation: bridge.Invocation, output: []u8) anyerror![]const u8 {
+    const self: *App = @ptrCast(@alignCast(context));
+    if (builtin.os.tag != .windows) {
+        // The resize strip only renders on Windows (App.tsx gates it on
+        // the platform); macOS chromeless windows keep whatever resize
+        // affordances AppKit gives them. Accept-and-ignore keeps the
+        // command's contract identical across platforms.
+        return std.fmt.bufPrint(output, "{{}}", .{});
+    }
+    var arena = std.heap.ArenaAllocator.init(self.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const Args = struct { edge: []const u8 };
+    const args = try parsePayload(Args, a, invocation.request.payload);
+
+    const hit_test: usize = if (std.mem.eql(u8, args.edge, "top"))
+        HTTOP
+    else if (std.mem.eql(u8, args.edge, "top-left"))
+        HTTOPLEFT
+    else if (std.mem.eql(u8, args.edge, "top-right"))
+        HTTOPRIGHT
+    else
+        return error.InvalidRequest;
+    try startWindowsNcGesture(hit_test);
     return std.fmt.bufPrint(output, "{{}}", .{});
 }
 
@@ -887,6 +979,8 @@ const user32 = struct {
     extern "user32" fn GetWindowThreadProcessId(hwnd: ?*anyopaque, pid: *u32) callconv(.c) u32;
     extern "user32" fn GetClassNameW(hwnd: ?*anyopaque, buf: [*]u16, max_count: c_int) callconv(.c) c_int;
     extern "user32" fn IsWindowVisible(hwnd: ?*anyopaque) callconv(.c) c_int;
+    extern "user32" fn ReleaseCapture() callconv(.c) c_int;
+    extern "user32" fn PostMessageW(hwnd: ?*anyopaque, msg: u32, wparam: usize, lparam: isize) callconv(.c) c_int;
 };
 const kernel32 = struct {
     extern "kernel32" fn GetCurrentProcessId() callconv(.c) u32;
@@ -903,6 +997,16 @@ const macos_chrome = struct {
 
 const SW_MAXIMIZE: c_int = 3;
 const SW_RESTORE: c_int = 9;
+
+// WM_NCLBUTTONDOWN's wparam is the hit-test code the click claims --
+// posting it with these codes starts the system's modal move (HTCAPTION)
+// or resize (HTTOP*) loop for the still-held physical press. See
+// startWindowsNcGesture.
+const WM_NCLBUTTONDOWN: u32 = 0x00A1;
+const HTCAPTION: usize = 2;
+const HTTOP: usize = 12;
+const HTTOPLEFT: usize = 13;
+const HTTOPRIGHT: usize = 14;
 
 /// Set (and read back) only inside `findOwnHostWindow`'s single
 /// synchronous `EnumWindows` call -- bridge handlers all run on the

@@ -121,6 +121,37 @@ pub fn build(b: *std.Build) void {
         .name = app_exe_name,
         .root_module = app_mod,
     });
+    // Windows subsystem posture -- backport of @native-sdk/cli 0.5.1's fix
+    // (that release's `native init`-generated build.zig template, in
+    // src/tooling/templates.zig, gates it identically). We stay pinned to
+    // 0.4.3 here, which never had this line at all -- every exe it built
+    // was console-subsystem, so launching the portable exe always flashed
+    // a terminal window behind the app. Gating on `optimize != .Debug`
+    // rather than "always windows" keeps `zig build test`'s own Compile
+    // step untouched (it's a separate b.addTest() artifact, not `exe`) and
+    // keeps the default Debug `zig build dev`/`zig build run` loop console
+    // -subsystem so its stdout/stderr (trace output, debug-overlay prints)
+    // stays visible in the terminal; only the ReleaseFast portable exe
+    // (`pnpm portable:windows` / ReleaseFast packaging) goes GUI-subsystem.
+    // Drop this block if the SDK pin ever moves past 0.5.1 and this
+    // build.zig is regenerated from the newer template.
+    if (target.result.os.tag == .windows and optimize != .Debug) {
+        exe.subsystem = .windows;
+    }
+    // The app icon, embedded as a Win32 resource so Explorer and the
+    // taskbar show the Maat logo instead of the generic exe icon. Neither
+    // the SDK's build graph nor the retired `native package` flow ever
+    // embedded one (packaging only copied app-icon.ico as a SIBLING file
+    // into the artifact folder -- see @native-sdk/cli's
+    // src/tooling/package.zig windowsIcon path -- which the single-file
+    // portable exe no longer ships). Zig's bundled resinator compiles the
+    // .rc; see assets/windows-app.rc for the icon group layout and how
+    // assets/icon.ico regenerates from assets/icon.png. All Windows
+    // builds get it, Debug included -- the icon has no subsystem/console
+    // interaction.
+    if (target.result.os.tag == .windows) {
+        app_mod.addWin32ResourceFile(.{ .file = b.path("assets/windows-app.rc") });
+    }
     linkPlatform(b, target, app_mod, exe, selected_platform, web_engine, native_sdk_path, cef_dir, cef_auto_install);
     b.installArtifact(exe);
 
@@ -521,8 +552,93 @@ fn patchedWebview2HostSource(b: *std.Build, native_sdk_path: []const u8) std.Bui
     else
         @panic("webview2_host.cpp no longer contains the expected ptMinTrackSize text right after the WM_GETMINMAXINFO patch ran -- the SDK likely changed; update or drop this build-time patch in build.zig");
 
+    // Chromeless top-frame reclaim. This one is ours, not an upstream SDK
+    // fix -- confirmed absent from @native-sdk/cli 0.5.1 too (diffed
+    // webview2_host.cpp against a 0.5.1 tarball; the only Windows
+    // chrome-related change in that release is a standard/hidden-titlebar
+    // dark-mode caption color fix that explicitly excludes chromeless
+    // windows, see applyStandardTitlebarColorScheme's own guard). Root
+    // cause: chromeless (WS_POPUP + WS_THICKFRAME, no WS_CAPTION) windows
+    // get NO custom WM_NCCALCSIZE handling above -- only the hidden-
+    // titlebar style does -- so the entire non-client calculation is left
+    // to DefWindowProc, which keeps reserving its normal resize-frame
+    // thickness (~7px at 96dpi) at the top even though there is no
+    // caption. On Windows 10 that reserved top band is PAINTED in the
+    // system titlebar color -- pure white on default-theme machines -- as
+    // a full-width bar above the app's own dark custom titlebar, in EVERY
+    // window state:
+    //   - restored: the band sits between the window's top edge and the
+    //     client area (verified: ClientToScreen reports a 7px top inset,
+    //     and screenshot rows 1-6 read 255,255,255 across the width);
+    //   - snapped (Win+arrow): same band, same paint;
+    //   - maximized: with the WM_GETMINMAXINFO patch above pinning the
+    //     outer rect to the work area exactly, the band additionally
+    //     carved a gap out of the client rect that exposed the white
+    //     window-class background brush.
+    // Recoloring the band instead of removing it is a dead end on
+    // Windows 10: DWMWA_CAPTION_COLOR is Windows 11 only (E_INVALIDARG on
+    // 10), and DWMWA_USE_IMMERSIVE_DARK_MODE was verified live to leave
+    // this caption-less band white. So this patch removes the top frame
+    // outright, the same way Chromium and Windows Terminal ship their
+    // frameless windows: intercept WM_NCCALCSIZE, let DefWindowProc lay
+    // out the normal frame (left/right/bottom keep their exact system
+    // metrics), then hand the TOP back to its pre-DefWindowProc value in
+    // every state. The client rect then reaches the true window top and
+    // the webview paints those pixels with the app's real titlebar
+    // colors, whatever the app theme.
+    //
+    // The trade: DefWindowProc's top band was also the HTTOP resize
+    // strip, and for a webview window the reclaimed pixels are covered by
+    // WebView2's own Chromium HWNDs, whose hit-testing never yields to
+    // the parent (unlike the SDK's canvas gpu-surface child, which
+    // forwards via HTTRANSPARENT -- that path is canvas-only). Top-edge
+    // resizing is therefore re-provided at the app layer: App.tsx renders
+    // a slim strip along the window top whose mousedown invokes the
+    // `window_start_resize` bridge command (src-zig/main.zig), which
+    // posts WM_NCLBUTTONDOWN with HTTOP/HTTOPLEFT/HTTOPRIGHT -- the same
+    // system resize loop DefWindowProc would have started from the old
+    // band. Runs before the chromeless WM_NCHITTEST block below so both
+    // sit together as this app's chromeless-specific handling.
+    const chromeless_topgap_needle =
+        \\    /* Chromeless windows (WS_POPUP, no caption): DefWindowProc owns the
+        \\     * resize frame when one exists; the app's window-drag regions are
+        \\     * the only caption there is, so a client-area hit inside one
+        \\     * answers HTCAPTION — the system move loop and the right-click
+        \\     * system menu for free, exactly like the hidden-titlebar shape. */
+        \\    if (message == WM_NCHITTEST) {
+        \\        Window *chromeless_window = chromelessWindowForHwnd(host, hwnd);
+    ;
+    const chromeless_topgap_replacement =
+        \\    /* Chromeless top-frame reclaim -- maat-native local patch, see
+        \\     * patchedWebview2HostSource in build.zig for why upstream has none. */
+        \\    if (message == WM_NCCALCSIZE && wparam) {
+        \\        Window *chromeless_calc_window = chromelessWindowForHwnd(host, hwnd);
+        \\        if (chromeless_calc_window) {
+        \\            NCCALCSIZE_PARAMS *params = reinterpret_cast<NCCALCSIZE_PARAMS *>(lparam);
+        \\            const LONG original_top = params->rgrc[0].top;
+        \\            const LRESULT def_result = DefWindowProcW(hwnd, WM_NCCALCSIZE, wparam, lparam);
+        \\            if (def_result != 0) return def_result;
+        \\            params->rgrc[0].top = original_top;
+        \\            return 0;
+        \\        }
+        \\    }
+        \\    /* Chromeless windows (WS_POPUP, no caption): DefWindowProc owns the
+        \\     * resize frame when one exists; the app's window-drag regions are
+        \\     * the only caption there is, so a client-area hit inside one
+        \\     * answers HTCAPTION — the system move loop and the right-click
+        \\     * system menu for free, exactly like the hidden-titlebar shape. */
+        \\    if (message == WM_NCHITTEST) {
+        \\        Window *chromeless_window = chromelessWindowForHwnd(host, hwnd);
+    ;
+    const chromeless_topgap_patched: []const u8 = if (std.mem.indexOf(u8, patched, chromeless_topgap_needle) != null)
+        std.mem.replaceOwned(u8, b.allocator, patched, chromeless_topgap_needle, chromeless_topgap_replacement) catch @panic("OOM")
+    else if (std.mem.indexOf(u8, patched, chromeless_topgap_replacement) != null)
+        patched
+    else
+        @panic("webview2_host.cpp no longer contains the expected chromeless WM_NCHITTEST text -- the SDK likely changed; update or drop this build-time patch in build.zig");
+
     const write_files = b.addWriteFiles();
-    return write_files.add("webview2_host_patched.cpp", patched);
+    return write_files.add("webview2_host_patched.cpp", chromeless_topgap_patched);
 }
 
 fn nativeSdkModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, native_sdk_path: []const u8) *std.Build.Module {

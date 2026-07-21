@@ -423,6 +423,59 @@ test("wheel pans, ctrl+wheel zooms, and explicit inspector metadata work", async
   await expect(page.getByText("https://example.com/maat")).toBeVisible();
 });
 
+test("Inspector shows a Caption section for an asset that has one, and omits it otherwise", async ({ page }) => {
+  const withCaption = await cardCenter(page, "Palette capture");
+  await page.mouse.click(withCaption.x, withCaption.y);
+  await page.getByTitle("Open inspector").click();
+  await expect(page.getByText("Caption", { exact: true })).toBeVisible();
+  await expect(page.getByText("A warm-toned palette swatch captured from a desktop wallpaper.")).toBeVisible();
+
+  // Clear the current spotlight via a scope click, not a canvas-corner
+  // click -- the spotlighted card is enlarged and can cover any "empty"
+  // corner (especially once the docked Inspector narrows the canvas), so a
+  // coordinate click is not guaranteed to land on background. The sibling
+  // Prompt test below documents the same choice.
+  await page.getByRole("button", { name: /All\s*10/ }).click();
+  await expect(page.getByText("Caption", { exact: true })).toHaveCount(0);
+
+  const withoutCaption = await cardCenter(page, "Eagle brand board");
+  await page.mouse.click(withoutCaption.x, withoutCaption.y);
+  await page.getByTitle("Open inspector").click();
+  // The Prompt editor renders for every selected asset -- its presence
+  // proves the inspector really switched to the new selection, so the
+  // caption's absence below is meaningful rather than a closed inspector.
+  await expect(page.getByLabel("Prompt")).toBeVisible();
+  await expect(page.getByText("Caption", { exact: true })).toHaveCount(0);
+});
+
+test("typing a Prompt in the Inspector persists across deselect/reselect", async ({ page }) => {
+  const card = await cardCenter(page, "Palette capture");
+  await page.mouse.click(card.x, card.y);
+  await page.getByTitle("Open inspector").click();
+
+  const prompt = page.getByLabel("Prompt");
+  await expect(prompt).toHaveValue("");
+  await prompt.fill("a photorealistic desktop wallpaper, warm palette, 4k");
+  await prompt.blur();
+
+  // Deselect (a scope click clears the spotlight/inspector selection the
+  // same way sidebar navigation always does -- more reliable here than a
+  // canvas background click, since the spotlighted card is scaled to fill
+  // the whole canvas viewport while it's focused, leaving no guaranteed
+  // empty corner to click once the docked Inspector has narrowed it), then
+  // reselect the same asset and reopen the inspector for it.
+  await page.getByRole("button", { name: /All\s*10/ }).click();
+  await expect(page.getByLabel("Prompt")).toHaveCount(0);
+
+  // Recompute the card's position rather than reusing the pre-spotlight
+  // coordinates -- safer against any layout settling since deselecting.
+  const reselectCard = await cardCenter(page, "Palette capture");
+  await page.mouse.click(reselectCard.x, reselectCard.y);
+  await page.getByTitle("Open inspector").click();
+
+  await expect(page.getByLabel("Prompt")).toHaveValue("a photorealistic desktop wallpaper, warm palette, 4k");
+});
+
 test("delete moves selected assets to trash", async ({ page }) => {
   const card = page.getByText("Eagle brand board").locator("xpath=ancestor::article");
   await card.click();
@@ -658,6 +711,70 @@ test("Grid mode arranges assets in a scrollable masonry, and Canvas positions su
   expect(Math.round(after!.y)).toBe(Math.round(before!.y));
 });
 
+test("Escape exits a focused asset in Canvas mode", async ({ page }) => {
+  const card = page.getByText("Eagle brand board").locator("xpath=ancestor::article");
+  await card.click();
+  await expect(card).toHaveAttribute("data-spotlight", "focused");
+
+  await page.keyboard.press("Escape");
+  await expect(card).not.toHaveAttribute("data-spotlight", "focused");
+  await expect(page.getByTitle("Open inspector")).toHaveCount(0);
+});
+
+test("Escape exits a focused asset in Grid mode", async ({ page }) => {
+  await page.getByRole("tab", { name: "Grid" }).click();
+  await page.getByText("Eagle brand board").locator("xpath=ancestor::article").click();
+  await expect(page.locator('article[data-spotlight="focused"]')).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator('article[data-spotlight="focused"]')).toHaveCount(0);
+});
+
+test("Grid focus fits the whole portrait image within the viewport, matching Canvas focus", async ({ page }) => {
+  // "Palette capture" (a10) is the mock library's portrait-aspect image (960 × 1200) -- this is the
+  // regression Grid focus used to fail: the focused image blew up to fill the viewport width, leaving
+  // only a small crop (the vertical middle) visible instead of the whole image.
+  const canvasCard = page.getByText("Palette capture").locator("xpath=ancestor::article");
+  await canvasCard.click();
+  await expect(canvasCard).toHaveAttribute("data-spotlight", "focused");
+  await page.waitForTimeout(260); // let the focus transition settle
+  const canvasBox = await canvasCard.boundingBox();
+  const canvasArea = await page.getByTestId("maat-canvas").boundingBox();
+  expect(canvasBox).not.toBeNull();
+  expect(canvasArea).not.toBeNull();
+
+  // Fits entirely within the canvas area, with padding -- not zoomed past it.
+  expect(canvasBox!.x).toBeGreaterThanOrEqual(canvasArea!.x - 1);
+  expect(canvasBox!.y).toBeGreaterThanOrEqual(canvasArea!.y - 1);
+  expect(canvasBox!.x + canvasBox!.width).toBeLessThanOrEqual(canvasArea!.x + canvasArea!.width + 1);
+  expect(canvasBox!.y + canvasBox!.height).toBeLessThanOrEqual(canvasArea!.y + canvasArea!.height + 1);
+
+  await page.keyboard.press("Escape");
+  await expect(canvasCard).not.toHaveAttribute("data-spotlight", "focused");
+
+  await page.getByRole("tab", { name: "Grid" }).click();
+  await page.getByText("Palette capture").locator("xpath=ancestor::article").click();
+  const gridCard = page.locator('article[data-spotlight="focused"]');
+  await expect(gridCard).toBeVisible();
+  const gridBox = await gridCard.boundingBox();
+  const gridArea = await page.getByTestId("grid-view").boundingBox();
+  expect(gridBox).not.toBeNull();
+  expect(gridArea).not.toBeNull();
+
+  // Same fit-within-viewport behavior as Canvas -- the whole image visible, not blown up past the view.
+  expect(gridBox!.x).toBeGreaterThanOrEqual(gridArea!.x - 1);
+  expect(gridBox!.y).toBeGreaterThanOrEqual(gridArea!.y - 1);
+  expect(gridBox!.x + gridBox!.width).toBeLessThanOrEqual(gridArea!.x + gridArea!.width + 1);
+  expect(gridBox!.y + gridBox!.height).toBeLessThanOrEqual(gridArea!.y + gridArea!.height + 1);
+
+  // Parity: Grid presents the same image at effectively the same size as Canvas does.
+  expect(Math.abs(gridBox!.width - canvasBox!.width)).toBeLessThan(3);
+  expect(Math.abs(gridBox!.height - canvasBox!.height)).toBeLessThan(3);
+
+  // A portrait image fit to a viewport this wide should end up taller than it is wide.
+  expect(gridBox!.height).toBeGreaterThan(gridBox!.width);
+});
+
 test("Infinity mode hides chrome and the spotlighted asset shows its name and size", async ({ page }) => {
   await page.getByRole("tab", { name: "Infinity" }).click();
   await expect(page.getByRole("banner")).toHaveCount(0);
@@ -675,6 +792,12 @@ test("Infinity mode hides chrome and the spotlighted asset shows its name and si
   await expect(spotlightMeta.getByText("Eagle brand board", { exact: true })).toBeVisible();
   await expect(spotlightMeta.getByText("Image · 1280 × 860")).toBeVisible();
 
+  // First Escape only unfocuses the spotlighted asset -- Infinity itself stays active.
+  await page.keyboard.press("Escape");
+  await expect(card).not.toHaveAttribute("data-spotlight", "focused");
+  await expect(page.getByRole("banner")).toHaveCount(0);
+
+  // A second Escape (nothing focused anymore) leaves Infinity and returns to Canvas.
   await page.keyboard.press("Escape");
   await expect(page.getByRole("banner")).toBeVisible();
   await expect(page.getByRole("tab", { name: "Canvas" })).toHaveAttribute("aria-selected", "true");

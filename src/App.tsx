@@ -46,7 +46,9 @@ import {
   purgeAssets,
   renameBoard as renameBoardCommand,
   restoreAssets as restoreBoardAssets,
+  setAssetPrompt as setAssetPromptCommand,
   startWindowDrag,
+  startWindowResize,
   toggleMaximizeWindow,
   trashAssets as trashBoardAssets,
   updateBoardDrawing,
@@ -159,16 +161,6 @@ export default function App() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
-
-  // Escape leaves Infinity's immersive chrome-hiding and returns to Canvas.
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || viewMode !== "infinity" || isEditableKeyTarget(event.target)) return;
-      setViewMode("canvas");
-    };
-    window.addEventListener("keydown", handleEscape);
-    return () => window.removeEventListener("keydown", handleEscape);
-  }, [viewMode, setViewMode]);
 
   // WebView2 (and Chromium generally) treats Ctrl+wheel / Ctrl+=/-/0 as a request to zoom the whole
   // page. Canvas.tsx already prevents that within its own bounds for its own zoom logic, but anywhere
@@ -389,6 +381,22 @@ export default function App() {
     select([]);
   };
 
+  // Escape exits a focused/spotlighted asset first (Canvas, Grid, or Infinity, whichever is focused);
+  // only once nothing is focused does a second Escape leave Infinity's immersive chrome-hiding and
+  // return to Canvas -- otherwise the two would fight over the same keypress.
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || isEditableKeyTarget(event.target)) return;
+      if (focusedNodeId) {
+        handleClearFocus();
+        return;
+      }
+      if (viewMode === "infinity") setViewMode("canvas");
+    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [focusedNodeId, handleClearFocus, viewMode, setViewMode]);
+
   const handleOpenInspector = (nodeId: string) => {
     setInspectorNodeId(nodeId);
     setInspectorOpen(true);
@@ -576,6 +584,17 @@ export default function App() {
     } catch (error) {
       console.error(error);
       setStatus(error instanceof Error ? error.message : "Could not rename board");
+    }
+  };
+
+  const handleSetAssetPrompt = async (assetId: string, prompt: string) => {
+    if (!activeBoardId) return;
+    try {
+      const updated = await setAssetPromptCommand(activeBoardId, assetId, prompt);
+      patchAsset(updated);
+    } catch (error) {
+      console.error(error);
+      setStatus(error instanceof Error ? error.message : "Could not save prompt");
     }
   };
 
@@ -777,6 +796,22 @@ export default function App() {
     runWindowAction(toggleMaximizeWindow);
   };
 
+  // Top-edge resize strip (Windows only). The frameless window's native top
+  // resize border is removed at the native layer -- Windows 10 painted it as
+  // a white bar over the dark titlebar (see build.zig's chromeless
+  // top-frame reclaim patch) -- so this strip re-provides the grab zone:
+  // its mousedown hands the still-held press to the OS resize loop via the
+  // window_start_resize command. Corner slivers widen to diagonal resize,
+  // mirroring how the OS treats the top corners of a real resize border.
+  const handleTopResizeMouseDown = (event: MouseEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const nearLeft = event.clientX < 16;
+    const nearRight = event.clientX > window.innerWidth - 16;
+    runWindowAction(() => startWindowResize(nearLeft ? "top-left" : nearRight ? "top-right" : "top"));
+  };
+
   const pickedAssets = selectedAssets(view, inspectorNodeId ? [inspectorNodeId] : []);
   const inspectorPanelOpen = inspectorOpen && !immersive;
   const immersiveInspectorOpen = inspectorOpen && immersive;
@@ -855,12 +890,25 @@ export default function App() {
   return (
     <div className="app-shell overflow-hidden bg-[var(--app-bg)] text-[var(--fg)]">
       <DialogHost />
+      {!useMacWindowControls && (
+        /* Windows frameless: the top resize grab zone (the native top border
+           is gone -- see handleTopResizeMouseDown). Above everything (z-50)
+           so the topmost ~6px always resize, matching how a real top border
+           would sit over the titlebar. */
+        <div
+          className="absolute inset-x-0 top-0 z-50 h-[6px] cursor-ns-resize"
+          data-drag-region="false"
+          data-testid="top-resize-strip"
+          onMouseDown={handleTopResizeMouseDown}
+        />
+      )}
       {immersive && (
         <>
           {/* The header (and its drag region) is unmounted while immersive, so keep a slim invisible
-              strip along the top that still lets the window be dragged/maximized. */}
+              strip along the top that still lets the window be dragged/maximized. On Windows it sits
+              below the resize strip so both gestures stay reachable. */}
           <div
-            className="absolute inset-x-0 top-0 z-40 h-2"
+            className={`absolute inset-x-0 z-40 h-2 ${useMacWindowControls ? "top-0" : "top-[6px]"}`}
             data-drag-region="deep"
             onMouseDown={handleTitlebarMouseDown}
             onDoubleClick={handleTitlebarDoubleClick}
@@ -1174,6 +1222,7 @@ export default function App() {
                 loading={loading}
                 assetCount={visibleCount}
                 nodeCount={visibleNodes.length}
+                onSetAssetPrompt={handleSetAssetPrompt}
                 floating
               />
             </div>
@@ -1189,6 +1238,7 @@ export default function App() {
             loading={loading}
             assetCount={visibleCount}
             nodeCount={visibleNodes.length}
+            onSetAssetPrompt={handleSetAssetPrompt}
           />
         )}
       </div>

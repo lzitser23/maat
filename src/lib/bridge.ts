@@ -445,6 +445,20 @@ export async function startWindowDrag(): Promise<void> {
   await invoke<Record<string, never>>("window_start_drag", {});
 }
 
+// The top-edge zone the resize gesture claims. Only top edges exist here:
+// left/right/bottom edges (and their corners) are real OS resize borders
+// on the frameless Windows window, handled natively without any JS. The
+// top border is removed at the native layer (it painted as a white bar --
+// see build.zig's chromeless top-frame reclaim patch), so App.tsx renders
+// its own strip along the window top and starts the system resize loop
+// through this command instead.
+export type TopResizeEdge = "top" | "top-left" | "top-right";
+
+export async function startWindowResize(edge: TopResizeEdge): Promise<void> {
+  if (!isNative()) return;
+  await invoke<Record<string, never>>("window_start_resize", { edge });
+}
+
 export async function minimizeWindow(): Promise<void> {
   if (!isNative()) return;
   await invoke<Record<string, never>>("window_minimize", {});
@@ -552,6 +566,22 @@ export async function setAssetThumbnail(boardId: string, assetId: string, png: B
   return invoke<Asset>("set_asset_thumbnail", { boardId, assetId, uploadPath: path });
 }
 
+// Persists the user-editable AI-generation prompt for an asset. Mirrors renameBoard's
+// shape: the mock branch mutates the in-memory view directly; the native branch round-trips
+// through the set_asset_prompt bridge command and returns the updated row.
+export async function setAssetPrompt(boardId: string, assetId: string, prompt: string): Promise<Asset> {
+  if (!isNative()) {
+    const view = mockViews.get(boardId) ?? mockState.view;
+    const updated = view.assets.map((asset) => (asset.id === assetId ? { ...asset, prompt } : asset));
+    view.assets = updated;
+    if (mockState.activeBoardId === boardId) mockState.view = view;
+    const asset = updated.find((candidate) => candidate.id === assetId);
+    if (!asset) throw new Error("Asset not found");
+    return asset;
+  }
+  return invoke<Asset>("set_asset_prompt", { boardId, assetId, prompt });
+}
+
 const board: Board = {
   id: "mock-board",
   name: "Maat Studio",
@@ -561,30 +591,40 @@ const board: Board = {
   updatedAt: new Date().toISOString(),
 };
 
-const mockDetails: Record<string, Pick<Asset, "tags" | "folders" | "note" | "sourceUrl">> = {
+const mockDetails: Record<string, Pick<Asset, "tags" | "folders" | "note" | "sourceUrl" | "caption" | "prompt">> = {
   a1: {
     tags: ["identity", "brand", "launch"],
     folders: ["Maat", "References"],
     note: "Primary board for the product language.",
     sourceUrl: "https://example.com/maat",
+    caption: null,
+    prompt: null,
   },
   a2: {
     tags: ["motion", "desktop"],
     folders: ["Maat", "Inspiration"],
     note: "Zoom pacing and canvas motion reference.",
     sourceUrl: null,
+    caption: null,
+    prompt: null,
   },
   a9: {
     tags: ["spatial", "ui"],
     folders: ["Maat", "References"],
     note: "Large-detail still used for focus zoom checks.",
     sourceUrl: null,
+    caption: null,
+    prompt: null,
   },
   a10: {
     tags: ["palette", "screenshot"],
     folders: ["Maat", "Capture"],
     note: "Useful for color contrast checks.",
     sourceUrl: null,
+    // Sample AI-training-dataset sidecar caption, for e2e coverage of the
+    // Inspector's Caption section (see tests/e2e/app.spec.ts).
+    caption: "A warm-toned palette swatch captured from a desktop wallpaper.",
+    prompt: null,
   },
 };
 
@@ -650,7 +690,7 @@ function mockAsset(
   sourceId = "mock-eagle",
   previewStatusOverride?: Asset["previewStatus"],
 ): Asset {
-  const details = mockDetails[id] ?? { tags: [], folders: [], note: null, sourceUrl: null };
+  const details = mockDetails[id] ?? { tags: [], folders: [], note: null, sourceUrl: null, caption: null, prompt: null };
   return {
     id,
     boardId,
@@ -674,6 +714,8 @@ function mockAsset(
     trashedAt: null,
     createdAt: new Date().toISOString(),
     metadataJson: null,
+    caption: details.caption,
+    prompt: details.prompt,
   };
 }
 
@@ -734,8 +776,15 @@ function cloneBoardView(view: BoardView): BoardView {
   };
 }
 
+// Placeholder art sized to the asset's own width/height (falling back to a 480×320 landscape default)
+// so a portrait-metadata mock asset (e.g. "Palette capture") actually renders as a portrait image,
+// not a landscape placeholder squashed into a portrait box -- needed to exercise real fit-to-viewport
+// behavior for focus/spotlight in the browser preview and in e2e.
 function mockImageDataUrl(asset: Asset) {
   const title = asset.name.slice(0, 22).replace(/[<&>"]/g, "");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="480" height="320" viewBox="0 0 480 320"><rect width="480" height="320" fill="#fff"/><rect x="20" y="20" width="440" height="280" fill="none" stroke="#000" stroke-width="4"/><path d="M40 250 160 140l78 70 58-52 144 112" fill="none" stroke="#000" stroke-width="10" stroke-linejoin="round"/><circle cx="360" cy="88" r="34" fill="#000"/><text x="40" y="52" fill="#000" font-family="Arial, sans-serif" font-size="24" font-weight="700">${title}</text></svg>`;
+  const width = asset.width && asset.width > 0 ? asset.width : 480;
+  const height = asset.height && asset.height > 0 ? asset.height : 320;
+  const short = Math.min(width, height);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="${width}" height="${height}" fill="#fff"/><rect x="${short * 0.04}" y="${short * 0.04}" width="${width - short * 0.08}" height="${height - short * 0.08}" fill="none" stroke="#000" stroke-width="4"/><path d="M${width * 0.08} ${height * 0.78} L${width * 0.33} ${height * 0.44} L${width * 0.5} ${height * 0.6} L${width * 0.62} ${height * 0.44} L${width * 0.9} ${height * 0.86}" fill="none" stroke="#000" stroke-width="${Math.max(4, short * 0.02)}" stroke-linejoin="round"/><circle cx="${width * 0.74}" cy="${height * 0.24}" r="${short * 0.09}" fill="#000"/><text x="${width * 0.08}" y="${height * 0.11}" fill="#000" font-family="Arial, sans-serif" font-size="${Math.max(14, short * 0.05)}" font-weight="700">${title}</text></svg>`;
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 }
