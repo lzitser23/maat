@@ -8,7 +8,7 @@
 // file-on-disk asset origin: the SDK's Windows host resolves
 // `frontend.dist` as a plain relative path against the process working
 // directory (assetFilePath() in @native-sdk/cli's webview2_host.cpp, still
-// true as of 0.4.3) with no embed hook anywhere in its asset pipeline, so
+// true as of 0.5.4) with no embed hook anywhere in its asset pipeline, so
 // files-on-disk-next-to-the-exe was previously a hard shipping
 // requirement. This server is what removes it.
 //

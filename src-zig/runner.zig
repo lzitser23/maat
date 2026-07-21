@@ -411,7 +411,7 @@ fn runLinux(app: native_sdk.App, options: RunOptions, init: std.process.Init) !v
 // The vendored WebView2 loader, compiled straight into the exe. The SDK's
 // Windows host loads it with a bare `LoadLibraryW(L"WebView2Loader.dll")`
 // (webView2Factory in @native-sdk/cli's webview2_host.cpp, still true as of
-// 0.4.3), which historically forced the DLL to ship as a sibling file next
+// 0.5.4), which historically forced the DLL to ship as a sibling file next
 // to the exe -- see stageWebView2Loader below for how the embedded copy
 // satisfies that same call without any sibling file, which is what lets the
 // Windows artifact be a single portable exe.

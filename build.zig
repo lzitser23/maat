@@ -467,7 +467,7 @@ fn patchedWebview2HostSource(b: *std.Build, native_sdk_path: []const u8) std.Bui
     // requested position exactly the way outer_width/outer_height land
     // its size there (for the chromeless WS_POPUP style this app uses,
     // AdjustWindowRectEx leaves frame.left/top at 0, so this reduces to
-    // plain window.x/window.y). Still broken as of 0.4.3.
+    // plain window.x/window.y). Still broken as of 0.5.4.
     const position_needle =
         \\        style,
         \\        CW_USEDEFAULT,
@@ -500,7 +500,7 @@ fn patchedWebview2HostSource(b: *std.Build, native_sdk_path: []const u8) std.Bui
     // second toggle call "restores" a window that was never truly
     // maximized. Supplying the monitor's work-area rect explicitly here
     // is the standard fix for maximizing a caption-less popup window.
-    // Still broken as of 0.4.3. This patch and the ptMinTrackSize dedup
+    // Still broken as of 0.5.4. This patch and the ptMinTrackSize dedup
     // patch right after it are coupled: the dedup only has anything to do
     // if this one actually ran (see maxinfo_applied below).
     const maxinfo_needle =
