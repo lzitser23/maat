@@ -128,7 +128,7 @@ Maat writes to two separate directories — back up, migrate, or troubleshoot us
 
 - **Node 22** and **pnpm 10.15.0** (the repo pins pnpm via `packageManager`).
 - **Zig 0.16.0** (pinned via `build.zig.zon`'s `minimum_zig_version`).
-- **`@native-sdk/cli@0.4.3`** installed globally: `npm install -g @native-sdk/cli@0.4.3` (pinned to match CI; see `.github/workflows/build.yml`).
+- **`@native-sdk/cli@0.5.4`** installed globally: `npm install -g @native-sdk/cli@0.5.4` (pinned to match CI; see `.github/workflows/build.yml`).
 
 ### Commands
 
