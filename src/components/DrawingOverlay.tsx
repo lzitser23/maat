@@ -32,6 +32,9 @@ export type DrawingOverlayProps = {
   scrollX: number;
   scrollY: number;
   zoom: { value: NormalizedZoomValue };
+  // When false (not drawing, no live sketches on the board), skip the per-tick scene sync —
+  // otherwise every pan/zoom tick forces Excalidraw to redraw its whole canvas for nothing.
+  syncViewport: boolean;
   onApiReady: (api: ExcalidrawImperativeAPI) => void;
   onChange: (elements: readonly OrderedExcalidrawElement[], appState: { scrollX: number; scrollY: number; zoom: { value: number } }) => void;
 };
@@ -44,6 +47,7 @@ export default function DrawingOverlay({
   scrollX,
   scrollY,
   zoom,
+  syncViewport,
   onApiReady,
   onChange,
 }: DrawingOverlayProps) {
@@ -58,9 +62,10 @@ export default function DrawingOverlay({
   );
 
   // Two-way viewport sync: push the board's pan/zoom into the Excalidraw scene without recording it
-  // as an undoable scene change.
+  // as an undoable scene change. Gated off while nothing drawn is visible; when syncViewport flips
+  // back on (entering drawing mode), this effect re-runs and catches the scene up.
   useEffect(() => {
-    if (!api) return;
+    if (!api || !syncViewport) return;
     api.updateScene({
       appState: {
         scrollX,
@@ -70,7 +75,7 @@ export default function DrawingOverlay({
       },
       captureUpdate: CaptureUpdateAction.NEVER,
     });
-  }, [api, scrollX, scrollY, zoom]);
+  }, [api, scrollX, scrollY, syncViewport, zoom]);
 
   return (
     <Excalidraw

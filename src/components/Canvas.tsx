@@ -119,6 +119,13 @@ export function Canvas({
 }: CanvasProps) {
   const [dropActive, setDropActive] = useState(false);
   const [panning, setPanning] = useState(false);
+  // True while the viewport (or a drag) is actively moving. Cards carry a 220ms transform
+  // transition so layout changes glide (auto-arrange, spotlight enter/exit) — but during
+  // interactive movement every tick would retrigger that ease, leaving each card perpetually
+  // chasing its target. That reads as the whole board lagging/stuttering, worst with macOS
+  // momentum scrolling. This flag lets CSS drop the transform transition while moving.
+  const [interacting, setInteracting] = useState(false);
+  const interactionTimerRef = useRef<number | null>(null);
   const [editingFrameId, setEditingFrameId] = useState<string | null>(null);
   const [excalidrawApi, setExcalidrawApi] = useState<ExcalidrawImperativeAPI | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
@@ -146,6 +153,23 @@ export function Canvas({
     viewportRef.current = { scale, offsetX, offsetY };
   }, [offsetX, offsetY, scale]);
 
+  // Wheel/gesture streams have no end event, so "interacting" decays shortly after the last tick.
+  const markViewportInteraction = useCallback(() => {
+    setInteracting(true);
+    if (interactionTimerRef.current !== null) window.clearTimeout(interactionTimerRef.current);
+    interactionTimerRef.current = window.setTimeout(() => {
+      interactionTimerRef.current = null;
+      setInteracting(false);
+    }, 200);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (interactionTimerRef.current !== null) window.clearTimeout(interactionTimerRef.current);
+    },
+    [],
+  );
+
   // macOS WKWebView reports trackpad pinch as WebKit's proprietary gesturestart/change/end events,
   // not the ctrl+wheel Chromium synthesizes — without these listeners pinch does nothing on the
   // board while Excalidraw (which subscribes to them) still zooms in drawing mode. Chromium never
@@ -166,6 +190,7 @@ export function Canvas({
     const handleChange = (event: Event) => {
       if (baseScale === 0) return;
       event.preventDefault();
+      markViewportInteraction();
       const gesture = event as WebKitGestureEvent;
       const current = viewportRef.current;
       const rect = element.getBoundingClientRect();
@@ -188,7 +213,7 @@ export function Canvas({
       element.removeEventListener("gesturechange", handleChange);
       element.removeEventListener("gestureend", handleEnd);
     };
-  }, [drawingMode, onViewportChange]);
+  }, [drawingMode, markViewportInteraction, onViewportChange]);
 
   useEffect(() => {
     lastDrawingJsonRef.current = drawingJson;
@@ -329,6 +354,7 @@ export function Canvas({
     // before the event ever reaches the viewer's canvas.
     if (event.target instanceof Element && event.target.closest("[data-model-viewer]")) return;
     event.preventDefault();
+    markViewportInteraction();
     const current = viewportRef.current;
 
     // Ctrl/Cmd + wheel (or pinch-zoom, which browsers report as ctrl+wheel) zooms, centered on the pointer.
@@ -485,6 +511,7 @@ export function Canvas({
     if (!drag || drag.pointerId !== event.pointerId) return;
 
     if (drag.type === "pan") {
+      markViewportInteraction();
       onViewportChange(scale, drag.startOffsetX + event.clientX - drag.startClientX, drag.startOffsetY + event.clientY - drag.startClientY);
       return;
     }
@@ -493,6 +520,7 @@ export function Canvas({
     const deltaY = event.clientY - drag.startClientY;
     if (!drag.moved && Math.hypot(deltaX, deltaY) < CLICK_DRAG_TOLERANCE) return;
     drag.moved = true;
+    markViewportInteraction();
 
     const nextNode = {
       ...drag.startNode,
@@ -595,6 +623,7 @@ export function Canvas({
     if (!drag || drag.pointerId !== event.pointerId) return;
     if (!drag.moved && Math.hypot(event.clientX - drag.startClientX, event.clientY - drag.startClientY) < CLICK_DRAG_TOLERANCE) return;
     drag.moved = true;
+    markViewportInteraction();
     const { frame, nodes } = computeFrameDrag(drag, event);
     onFrameChange([frame], nodes, { commit: false });
   };
@@ -629,6 +658,7 @@ export function Canvas({
     <div
       ref={canvasRef}
       data-testid="maat-canvas"
+      data-interacting={interacting ? "true" : undefined}
       className="canvas-grid relative h-full w-full overflow-hidden"
       onWheelCapture={drawingMode ? undefined : handleWheel}
       onPasteCapture={handlePaste}
@@ -665,6 +695,7 @@ export function Canvas({
             scrollX={excalidrawScrollX}
             scrollY={excalidrawScrollY}
             zoom={toExcalidrawZoom(scale)}
+            syncViewport={drawingMode || drawingElementCount > 0}
             onApiReady={setExcalidrawApi}
             onChange={handleExcalidrawChange}
           />
