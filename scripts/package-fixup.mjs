@@ -33,7 +33,7 @@
 // instead of shipping a broken artifact.
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -65,8 +65,13 @@ async function findPackageDir(forTarget) {
   throw new Error(`no ${forTarget} package-manifest.zon found under ${packageRoot}`);
 }
 
-// No file layout fixup needed on macOS (see module doc comment) -- this
-// only verifies the bundle came out complete.
+// The one macOS fixup, plus verification. The SDK's createMacosApp names
+// the bundle directory after app.zon's machine `.name` ("maat-native.app"),
+// and Finder labels the DMG/zip icon with that directory name -- NOT the
+// CFBundleDisplayName inside Info.plist -- so users would see "maat-native".
+// Rename the bundle to `<display_name>.app` here; everything downstream
+// (sign, notarize, DMG staging, artifact upload) discovers the bundle
+// dynamically, so only this script needs to know.
 async function verifyMacos() {
   const pkgDir = await findPackageDir("macos");
 
@@ -90,7 +95,17 @@ async function verifyMacos() {
     throw new Error(`packaged frontend missing ${distIndexPath} -- the packager shipped an empty or absent dist/`);
   }
 
-  console.log(`[package-fixup] verified macOS bundle at ${path.relative(repoRoot, pkgDir)}`);
+  const appZon = await readFile(path.join(repoRoot, "app.zon"), "utf8");
+  const displayName = appZon.match(/\.display_name\s*=\s*"([^"]+)"/)?.[1];
+  if (!displayName) {
+    throw new Error("no .display_name found in app.zon -- cannot name the .app bundle");
+  }
+  const namedDir = path.join(packageRoot, `${displayName}.app`);
+  if (pkgDir !== namedDir) {
+    await rename(pkgDir, namedDir);
+  }
+
+  console.log(`[package-fixup] verified macOS bundle at ${path.relative(repoRoot, namedDir)}`);
 }
 
 async function main() {
