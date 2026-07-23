@@ -63,7 +63,7 @@ Tagged versions (`v*`) publish to [**Releases**](https://github.com/lzitser23/ma
 | Platform | Asset | Notes |
 | --- | --- | --- |
 | macOS | `Maat-vX.Y.Z.dmg` | Signed + notarized — open the DMG and drag **Maat** to **Applications** |
-| macOS | `Maat-Native-macos-vX.Y.Z.zip` | The same signed, notarized `.app`, zipped |
+| macOS | `Maat-macos-vX.Y.Z.zip` | The same signed, notarized `.app`, zipped |
 | Windows | `Maat-portable-vX.Y.Z.exe` | Portable single file — download anywhere and double-click; nothing to unzip or install |
 
 Each release also carries `.sha256` sidecars for the exe and the macOS zip — the in-app updater verifies downloads against them, and you can too.
@@ -75,11 +75,11 @@ Between releases, every merge to `main` builds both platforms via GitHub Actions
 | Platform | Asset | Notes |
 | --- | --- | --- |
 | Windows | `Maat-portable-windows` (single `maat-native.exe`) | Portable — run it from anywhere |
-| macOS | `Maat-Native-macos-notarized` (zipped `.app`) | Signed + notarized — opens like any app |
+| macOS | `Maat-macos-notarized` (zipped `.app`) | Signed + notarized — opens like any app |
 
 **Windows:** builds are **unsigned**, so SmartScreen will warn on first run — choose **More info → Run anyway**.
 
-**macOS:** release and `main` builds are signed and notarized. Unsigned CI artifacts (PR/`dev` builds, or the plain `Maat-Native-macos` artifact) need the quarantine flag stripped before first launch: `xattr -dr com.apple.quarantine "Maat Native.app"` — and, because GitHub's artifact zip drops file permissions, `chmod +x "Maat Native.app/Contents/MacOS/maat-native"`.
+**macOS:** release and `main` builds are signed and notarized. Unsigned CI artifacts (PR/`dev` builds, or the plain `Maat-macos` artifact) need the quarantine flag stripped before first launch: `xattr -dr com.apple.quarantine "Maat.app"` — and, because GitHub's artifact zip drops file permissions, `chmod +x "Maat.app/Contents/MacOS/maat-native"`.
 
 ### Build from source
 

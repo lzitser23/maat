@@ -1930,8 +1930,8 @@ pub fn main(init: std.process.Init) !void {
     }
 
     try runner.runWithOptions(app_state.app(), .{
-        .app_name = "Maat Native",
-        .window_title = "Maat Native",
+        .app_name = "Maat",
+        .window_title = "Maat",
         .bundle_id = "com.lzitser.maat-native",
         .icon_path = "assets/icon.png",
         .bridge = app_state.bridge_(),
