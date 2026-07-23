@@ -39,6 +39,7 @@ import {
   importClipboardItems,
   importExternalUrls,
   importPaths,
+  type ImportProgress,
   loadBoard,
   minimizeWindow,
   pickImportFolder,
@@ -93,6 +94,10 @@ export default function App() {
   const [canvasSize, setCanvasSize] = useState({ width: 1120, height: 760 });
   const [drawingMode, setDrawingMode] = useState(false);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
+  // Non-null while an import job is running; {0,0} until the backend's first
+  // poll lands (folder walks report totals only once enumerated), which the
+  // pill renders as indeterminate.
+  const [importProgress, setImportProgress] = useState<ImportProgress | null>(null);
   const {
     theme,
     setTheme,
@@ -327,13 +332,15 @@ export default function App() {
     if (!view || paths.length === 0) return;
     setLoading(true);
     setStatus(`Importing ${paths.length} source${paths.length === 1 ? "" : "s"}`);
+    setImportProgress({ completed: 0, total: 0 });
     try {
-      const report = await importPaths(view.board.id, paths);
+      const report = await importPaths(view.board.id, paths, setImportProgress);
       await finishImport(report);
     } catch (error) {
       console.error(error);
       setStatus(error instanceof Error ? error.message : "Import failed");
     } finally {
+      setImportProgress(null);
       setLoading(false);
     }
   };
@@ -342,13 +349,15 @@ export default function App() {
     if (!view || urls.length === 0) return;
     setLoading(true);
     setStatus(`Importing ${urls.length} remote image${urls.length === 1 ? "" : "s"}`);
+    setImportProgress({ completed: 0, total: 0 });
     try {
-      const report = await importExternalUrls(view.board.id, urls);
+      const report = await importExternalUrls(view.board.id, urls, setImportProgress);
       await finishImport(report);
     } catch (error) {
       console.error(error);
       setStatus(error instanceof Error ? error.message : "Remote import failed");
     } finally {
+      setImportProgress(null);
       setLoading(false);
     }
   };
@@ -357,13 +366,15 @@ export default function App() {
     if (!view || items.length === 0) return;
     setLoading(true);
     setStatus(`Importing ${items.length} pasted image${items.length === 1 ? "" : "s"}`);
+    setImportProgress({ completed: 0, total: 0 });
     try {
-      const report = await importClipboardItems(view.board.id, items);
+      const report = await importClipboardItems(view.board.id, items, setImportProgress);
       await finishImport(report);
     } catch (error) {
       console.error(error);
       setStatus(error instanceof Error ? error.message : "Paste import failed");
     } finally {
+      setImportProgress(null);
       setLoading(false);
     }
   };
@@ -1261,6 +1272,8 @@ export default function App() {
             <Info className="h-4 w-4" />
           </Button>
 
+          {importProgress && <ImportProgressPill progress={importProgress} />}
+
           {/* Immersive mode collapses the docked inspector's grid column to 0px, so it floats over the
               canvas instead here -- otherwise toggling it in Infinity mode had no visible effect. */}
           {immersiveInspectorOpen && (
@@ -1302,6 +1315,36 @@ const VIEW_MODE_OPTIONS: { value: ViewMode; label: string }[] = [
   { value: "canvas", label: "Canvas" },
   { value: "infinity", label: "Infinity" },
 ];
+
+// Floating import progress: shown while any import job (files, folder, URLs,
+// clipboard) is running. Totals grow as folder walks discover files, so the
+// bar can move its end point mid-import; total 0 means "still enumerating"
+// and renders as an indeterminate pulse.
+function ImportProgressPill({ progress }: { progress: ImportProgress }) {
+  const { completed, total } = progress;
+  const percent = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : null;
+  return (
+    <div
+      data-testid="import-progress"
+      className="absolute bottom-16 left-1/2 z-40 w-64 -translate-x-1/2 rounded-md border border-[var(--line)] bg-[var(--floating)] p-3 shadow-[var(--shadow-soft)] backdrop-blur"
+    >
+      <div className="flex items-center justify-between text-xs text-[var(--muted)]">
+        <span>Importing…</span>
+        {total > 0 && (
+          <span className="tabular-nums">
+            {completed.toLocaleString()} / {total.toLocaleString()}
+          </span>
+        )}
+      </div>
+      <div className="mt-2 h-1 overflow-hidden rounded-full bg-[var(--panel-strong)]">
+        <div
+          className={`h-full rounded-full bg-[var(--fg)] transition-[width] duration-150 ${percent === null ? "animate-pulse" : ""}`}
+          style={{ width: percent === null ? "100%" : `${percent}%` }}
+        />
+      </div>
+    </div>
+  );
+}
 
 function ViewModePill({ mode, onChange }: { mode: ViewMode; onChange: (mode: ViewMode) => void }) {
   return (

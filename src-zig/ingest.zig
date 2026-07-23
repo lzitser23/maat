@@ -99,12 +99,29 @@ pub const ClipboardItem = struct {
 // importPaths
 // ---------------------------------------------------------------------------
 
+/// Live counters for a running import job, shared with the bridge thread
+/// that answers `import_job_status` polls (see main.zig's JobSlot). Both are
+/// monotonic while the job runs: `total` grows as candidate sets are
+/// discovered (a folder's size is unknown until its walk finishes), and
+/// `completed` counts every processed candidate -- imported, duplicate, and
+/// failed alike, so the bar always reaches the end.
+pub const Progress = struct {
+    completed: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    total: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+
+    pub fn reset(self: *Progress) void {
+        self.completed.store(0, .monotonic);
+        self.total.store(0, .monotonic);
+    }
+};
+
 pub fn importPaths(
     allocator: std.mem.Allocator,
     io: std.Io,
     storage: *Storage,
     board_id: []const u8,
     paths: []const []const u8,
+    progress: ?*Progress,
 ) !ImportReport {
     var builder = try ReportBuilder.init(allocator);
     errdefer builder.deinitOnError(allocator);
@@ -138,8 +155,13 @@ pub fn importPaths(
             allocator.free(candidates);
         }
 
+        if (progress) |p| _ = p.total.fetchAdd(candidates.len, .monotonic);
+
         var source_imported: i64 = 0;
         for (candidates) |candidate| {
+            defer if (progress) |p| {
+                _ = p.completed.fetchAdd(1, .monotonic);
+            };
             if (importOne(allocator, io, storage, board_id, source.id, candidate)) |imported| {
                 if (imported) {
                     builder.imported += 1;
@@ -174,7 +196,12 @@ pub fn importExternalUrls(
     storage: *Storage,
     board_id: []const u8,
     urls: []const []const u8,
+    progress: ?*Progress,
 ) !ImportReport {
+    // Progress counts the url downloads (the slow half); the follow-up
+    // importPaths pass over the staged files gets null so items aren't
+    // counted twice.
+    if (progress) |p| _ = p.total.fetchAdd(urls.len, .monotonic);
     const temp_dir = try tempImportDir(allocator, io, storage, "remote");
     defer allocator.free(temp_dir);
 
@@ -188,6 +215,9 @@ pub fn importExternalUrls(
     }
 
     for (urls) |url| {
+        defer if (progress) |p| {
+            _ = p.completed.fetchAdd(1, .monotonic);
+        };
         const outcome = try downloadUrl(allocator, io, url, temp_dir);
         switch (outcome) {
             .ok => |p| try paths.append(allocator, p),
@@ -203,7 +233,7 @@ pub fn importExternalUrls(
         defer allocator.free(path_slices);
         for (paths.items, 0..) |p, i| path_slices[i] = p;
 
-        const imported = try importPaths(allocator, io, storage, board_id, path_slices);
+        const imported = try importPaths(allocator, io, storage, board_id, path_slices, null);
         try builder.mergeFrom(allocator, imported);
     }
 
@@ -222,7 +252,11 @@ pub fn importClipboardItems(
     storage: *Storage,
     board_id: []const u8,
     items: []const ClipboardItem,
+    progress: ?*Progress,
 ) !ImportReport {
+    // Same split as importExternalUrls: staging the items is what's counted,
+    // the inner importPaths pass gets null.
+    if (progress) |p| _ = p.total.fetchAdd(items.len, .monotonic);
     const temp_dir = try tempImportDir(allocator, io, storage, "clipboard");
     defer allocator.free(temp_dir);
 
@@ -236,6 +270,9 @@ pub fn importClipboardItems(
     }
 
     for (items) |item| {
+        defer if (progress) |p| {
+            _ = p.completed.fetchAdd(1, .monotonic);
+        };
         if (item.uploadPath) |upload_path| {
             // Security boundary (renderer-supplied path): `uploadPath` is
             // plain JSON data from the bridge -- server.zig's `/upload`
@@ -325,7 +362,7 @@ pub fn importClipboardItems(
         defer allocator.free(path_slices);
         for (paths.items, 0..) |p, i| path_slices[i] = p;
 
-        const imported = try importPaths(allocator, io, storage, board_id, path_slices);
+        const imported = try importPaths(allocator, io, storage, board_id, path_slices, null);
         try builder.mergeFrom(allocator, imported);
     }
 

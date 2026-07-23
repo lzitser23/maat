@@ -108,6 +108,10 @@ const JobSlot = struct {
     /// `App.stop`'s doc comment). `drain` joins this so no worker can
     /// still be inside a `Storage` call when shutdown closes it.
     thread: ?std.Thread = null,
+    /// Written by the worker, read by `import_job_status` polls (atomics --
+    /// no lock needed). Reset by `reserve` so a recycled slot never shows
+    /// the previous job's counts.
+    progress: ingest_mod.Progress = .{},
 };
 
 /// Owns the import job slots AND their shutdown lifecycle. `reserve`
@@ -140,6 +144,7 @@ const JobRegistry = struct {
                 slot.done = false;
                 slot.result = null;
                 slot.thread = null;
+                slot.progress.reset();
                 // Generated under the lock (F5): `import_job_status` reads
                 // `slot.id` from other threads, so writing it after unlock
                 // would be an unsynchronized data race with those readers.
@@ -1341,7 +1346,7 @@ fn runPathsJob(args: *PathsJobArgs) void {
     var io_threaded: std.Io.Threaded = .init_single_threaded;
     const io = io_threaded.io();
 
-    const report = ingest_mod.importPaths(a, io, args.storage, args.board_id, path_slices) catch |err| {
+    const report = ingest_mod.importPaths(a, io, args.storage, args.board_id, path_slices, &args.slot.progress) catch |err| {
         finishJobError(args.jobs, args.slot, @errorName(err));
         return;
     };
@@ -1386,7 +1391,7 @@ fn runUrlsJob(args: *UrlsJobArgs) void {
     var io_threaded: std.Io.Threaded = .init_single_threaded;
     const io = io_threaded.io();
 
-    const report = ingest_mod.importExternalUrls(a, io, args.storage, args.board_id, url_slices) catch |err| {
+    const report = ingest_mod.importExternalUrls(a, io, args.storage, args.board_id, url_slices, &args.slot.progress) catch |err| {
         finishJobError(args.jobs, args.slot, @errorName(err));
         return;
     };
@@ -1456,7 +1461,7 @@ fn runClipboardJob(args: *ClipboardJobArgs) void {
     var io_threaded: std.Io.Threaded = .init_single_threaded;
     const io = io_threaded.io();
 
-    const report = ingest_mod.importClipboardItems(a, io, args.storage, args.board_id, items) catch |err| {
+    const report = ingest_mod.importClipboardItems(a, io, args.storage, args.board_id, items, &args.slot.progress) catch |err| {
         finishJobError(args.jobs, args.slot, @errorName(err));
         return;
     };
@@ -1870,8 +1875,14 @@ fn importJobStatus(context: *anyopaque, invocation: bridge.Invocation, output: [
         return std.fmt.bufPrint(output, "{{\"done\":true,\"report\":null,\"error\":\"unknown job\"}}", .{});
     };
     if (!slot.done) {
+        const completed = slot.progress.completed.load(.monotonic);
+        const total = slot.progress.total.load(.monotonic);
         self.jobs.mutex.unlock();
-        return std.fmt.bufPrint(output, "{{\"done\":false,\"report\":null,\"error\":null}}", .{});
+        return std.fmt.bufPrint(
+            output,
+            "{{\"done\":false,\"report\":null,\"error\":null,\"progress\":{{\"completed\":{d},\"total\":{d}}}}}",
+            .{ completed, total },
+        );
     }
 
     // "Job results retained until polled once after done, then freed."

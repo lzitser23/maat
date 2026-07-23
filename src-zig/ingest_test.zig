@@ -144,7 +144,7 @@ test "importing an eagle library fixture updates the source item count" {
     const board = boards[0];
 
     const paths = [_][]const u8{library_path};
-    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths);
+    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths, null);
     defer report.deinit(allocator);
 
     try testing.expectEqual(@as(i64, 1), report.imported);
@@ -190,12 +190,12 @@ test "reimporting the same file is deduped instead of creating a second asset" {
 
     const paths = [_][]const u8{source_file};
 
-    const first = try ingest.importPaths(allocator, io, &store, board.id, &paths);
+    const first = try ingest.importPaths(allocator, io, &store, board.id, &paths, null);
     defer first.deinit(allocator);
     try testing.expectEqual(@as(i64, 1), first.imported);
     try testing.expectEqual(@as(i64, 0), first.skippedDuplicates);
 
-    const second = try ingest.importPaths(allocator, io, &store, board.id, &paths);
+    const second = try ingest.importPaths(allocator, io, &store, board.id, &paths, null);
     defer second.deinit(allocator);
     try testing.expectEqual(@as(i64, 0), second.imported);
     try testing.expectEqual(@as(i64, 1), second.skippedDuplicates);
@@ -231,7 +231,7 @@ test "a real PNG gets a generated 720-bounded thumbnail" {
     const board = boards[0];
 
     const paths = [_][]const u8{source_file};
-    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths);
+    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths, null);
     defer report.deinit(allocator);
     try testing.expectEqual(@as(i64, 1), report.imported);
     try testing.expectEqual(@as(i64, 0), report.failed);
@@ -275,7 +275,7 @@ test "a non-image file gets fallback preview status and no thumbnail" {
     const board = boards[0];
 
     const paths = [_][]const u8{source_file};
-    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths);
+    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths, null);
     defer report.deinit(allocator);
     try testing.expectEqual(@as(i64, 1), report.imported);
     try testing.expectEqual(@as(i64, 0), report.failed);
@@ -325,7 +325,7 @@ test "a corrupt image in a folder import falls back but does not sink the batch"
     const board = boards[0];
 
     const paths = [_][]const u8{folder};
-    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths);
+    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths, null);
     defer report.deinit(allocator);
 
     // Both files are counted as imported (the corrupt one falls back rather than
@@ -373,7 +373,7 @@ test "importExternalUrls surfaces a per-url failure without touching the network
     // opened, so this exercises (and type-checks) the whole importExternalUrls path
     // without requiring real network access.
     const urls = [_][]const u8{""};
-    const report = try ingest.importExternalUrls(allocator, io, &store, board.id, &urls);
+    const report = try ingest.importExternalUrls(allocator, io, &store, board.id, &urls, null);
     defer report.deinit(allocator);
 
     try testing.expectEqual(@as(i64, 0), report.imported);
@@ -405,7 +405,7 @@ test "importClipboardItems rejects empty and oversized payloads" {
     const items = [_]ingest.ClipboardItem{
         .{ .name = "empty.png", .mime = "image/png", .bytes = &.{} },
     };
-    const report = try ingest.importClipboardItems(allocator, io, &store, board.id, &items);
+    const report = try ingest.importClipboardItems(allocator, io, &store, board.id, &items, null);
     defer report.deinit(allocator);
 
     try testing.expectEqual(@as(i64, 0), report.imported);
@@ -478,7 +478,7 @@ test "importClipboardItems imports an upload-shaped item well beyond 1 MiB" {
     const items = [_]ingest.ClipboardItem{
         .{ .name = "pasted.png", .mime = "image/png", .uploadPath = upload_path },
     };
-    const report = try ingest.importClipboardItems(allocator, io, &store, board.id, &items);
+    const report = try ingest.importClipboardItems(allocator, io, &store, board.id, &items, null);
     defer report.deinit(allocator);
 
     try testing.expectEqual(@as(i64, 1), report.imported);
@@ -522,7 +522,7 @@ test "importClipboardItems reports a missing uploadPath as a failure without err
     const items = [_]ingest.ClipboardItem{
         .{ .name = "gone.png", .mime = "image/png", .uploadPath = missing_path },
     };
-    const report = try ingest.importClipboardItems(allocator, io, &store, board.id, &items);
+    const report = try ingest.importClipboardItems(allocator, io, &store, board.id, &items, null);
     defer report.deinit(allocator);
 
     try testing.expectEqual(@as(i64, 0), report.imported);
@@ -590,7 +590,7 @@ test "importClipboardItems rejects an out-of-containment uploadPath without touc
         .{ .name = "elsewhere.txt", .mime = "text/plain", .uploadPath = elsewhere_victim },
         .{ .name = "prefix.txt", .mime = "text/plain", .uploadPath = prefix_victim },
     };
-    const report = try ingest.importClipboardItems(allocator, io, &store, board.id, &items);
+    const report = try ingest.importClipboardItems(allocator, io, &store, board.id, &items, null);
     defer report.deinit(allocator);
 
     try testing.expectEqual(@as(i64, 0), report.imported);
@@ -657,7 +657,7 @@ test "a forced insertAsset failure after the copy does not orphan the managed fi
     defer ingest.test_force_insert_error = null;
 
     const paths = [_][]const u8{source_file};
-    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths);
+    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths, null);
     defer report.deinit(allocator);
 
     try testing.expectEqual(@as(i64, 0), report.imported);
@@ -712,7 +712,7 @@ test "a folder import captures a sidecar .txt as the paired image's caption and 
     const board = boards[0];
 
     const paths = [_][]const u8{folder};
-    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths);
+    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths, null);
     defer report.deinit(allocator);
 
     // Only the image is imported -- the sidecar .txt is consumed as its
@@ -759,7 +759,7 @@ test "a sidecar .txt with no matching sibling is imported as its own asset, not 
     const board = boards[0];
 
     const paths = [_][]const u8{folder};
-    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths);
+    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths, null);
     defer report.deinit(allocator);
 
     try testing.expectEqual(@as(i64, 1), report.imported);
@@ -808,7 +808,7 @@ test "sidecar caption matching is case-insensitive on both the extension and the
     const board = boards[0];
 
     const paths = [_][]const u8{folder};
-    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths);
+    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths, null);
     defer report.deinit(allocator);
 
     try testing.expectEqual(@as(i64, 1), report.imported);
@@ -853,7 +853,7 @@ test "a sidecar-shaped file with a non-.txt extension is never treated as a capt
     const board = boards[0];
 
     const paths = [_][]const u8{folder};
-    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths);
+    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths, null);
     defer report.deinit(allocator);
 
     // Both files are imported as separate assets -- no pairing happened.
@@ -900,7 +900,7 @@ test "an empty sidecar .txt is not treated as a caption and is imported as its o
     const board = boards[0];
 
     const paths = [_][]const u8{folder};
-    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths);
+    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths, null);
     defer report.deinit(allocator);
 
     // Both the image and the (empty) sidecar are imported -- an empty
@@ -966,7 +966,7 @@ test "a forced insertAsset failure after the copy does not orphan a generated th
     defer ingest.test_force_insert_error = null;
 
     const paths = [_][]const u8{source_file};
-    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths);
+    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths, null);
     defer report.deinit(allocator);
 
     try testing.expectEqual(@as(i64, 0), report.imported);
@@ -978,4 +978,52 @@ test "a forced insertAsset failure after the copy does not orphan a generated th
 
     try testing.expect(!fileExists(io, managed_path));
     try testing.expect(!fileExists(io, thumb_path));
+}
+
+test "importPaths reports live progress: total per discovered candidate, completed for every outcome" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try absPath(allocator, tmp.dir, io);
+    defer allocator.free(tmp_root);
+
+    const folder = try std.fs.path.join(allocator, &.{ tmp_root, "shoot" });
+    defer allocator.free(folder);
+    inline for (.{ "a.png", "b.png", "c.png" }) |name| {
+        const p = try std.fs.path.join(allocator, &.{ folder, name });
+        defer allocator.free(p);
+        try writeAbsoluteFile(io, p, "bytes-" ++ name);
+    }
+
+    const root_path = try std.fmt.allocPrint(allocator, "{s}/data", .{tmp_root});
+    defer allocator.free(root_path);
+    var store = try Storage.open(allocator, root_path);
+    defer store.close();
+
+    const boards = try store.listBoards(allocator);
+    defer {
+        for (boards) |b| b.deinit(allocator);
+        allocator.free(boards);
+    }
+    const board = boards[0];
+
+    var progress: ingest.Progress = .{};
+    const paths = [_][]const u8{folder};
+    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths, &progress);
+    defer report.deinit(allocator);
+
+    try testing.expectEqual(@as(i64, 3), report.imported);
+    try testing.expectEqual(@as(u64, 3), progress.total.load(.monotonic));
+    try testing.expectEqual(@as(u64, 3), progress.completed.load(.monotonic));
+
+    // Re-import: all three dedupe as duplicates, and completed still counts
+    // them -- the bar must reach the end even when nothing new lands.
+    var again: ingest.Progress = .{};
+    const second = try ingest.importPaths(allocator, io, &store, board.id, &paths, &again);
+    defer second.deinit(allocator);
+    try testing.expectEqual(@as(i64, 3), second.skippedDuplicates);
+    try testing.expectEqual(@as(u64, 3), again.total.load(.monotonic));
+    try testing.expectEqual(@as(u64, 3), again.completed.load(.monotonic));
 }
