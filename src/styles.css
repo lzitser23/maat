@@ -533,25 +533,3 @@ input {
 .asset-card[data-spotlight="focused"] .asset-card__footer {
   display: none;
 }
-
-.asset-card__inspect {
-  position: absolute;
-  top: 0.75rem;
-  right: 0.75rem;
-  z-index: 3;
-  display: inline-flex;
-  width: 2.25rem;
-  height: 2.25rem;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  color: var(--fg);
-  background: var(--floating);
-  box-shadow: var(--shadow-soft);
-  transform-origin: top right;
-}
-
-.asset-card__inspect:hover {
-  background: var(--panel-strong);
-}
