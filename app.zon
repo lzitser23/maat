@@ -2,7 +2,7 @@
     .id = "com.lzitser.maat-native",
     .name = "maat-native",
     .display_name = "Maat",
-    .version = "0.2.1",
+    .version = "0.2.2",
     .icons = .{ "assets/icon.png" },
     .platforms = .{ "windows", "macos" },
     .permissions = .{ "window", "dialog", "filesystem", "clipboard", "network" },
