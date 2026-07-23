@@ -72,13 +72,13 @@ pub fn isNewer(candidate: []const u8, current: []const u8) bool {
 }
 
 /// Whether `name` is this platform's update package (CI's release asset
-/// naming: "Maat-portable-vX.Y.Z.exe" / "Maat-Native-macos-vX.Y.Z.zip").
+/// naming: "Maat-portable-vX.Y.Z.exe" / "Maat-macos-vX.Y.Z.zip").
 pub fn isPlatformAsset(name: []const u8) bool {
     if (builtin.os.tag == .windows) {
         return std.mem.startsWith(u8, name, "Maat-portable-") and std.mem.endsWith(u8, name, ".exe");
     }
     if (builtin.os.tag == .macos) {
-        return std.mem.startsWith(u8, name, "Maat-Native-macos-") and std.mem.endsWith(u8, name, ".zip");
+        return std.mem.startsWith(u8, name, "Maat-macos-") and std.mem.endsWith(u8, name, ".zip");
     }
     return false;
 }
@@ -572,7 +572,7 @@ test "isNewer compares numeric segments and tolerates a v prefix" {
 
 test "asset names reject paths and unknown types" {
     try validateAssetName("Maat-portable-v0.2.0.exe");
-    try validateAssetName("Maat-Native-macos-v0.2.0.zip");
+    try validateAssetName("Maat-macos-v0.2.0.zip");
     try std.testing.expectError(error.InvalidUpdateAsset, validateAssetName("../evil.exe"));
     try std.testing.expectError(error.InvalidUpdateAsset, validateAssetName("dir\\evil.exe"));
     try std.testing.expectError(error.InvalidUpdateAsset, validateAssetName(".hidden.exe"));
@@ -616,7 +616,7 @@ test "pickUpdate selects the platform asset with its sidecar" {
     const asset_name = if (builtin.os.tag == .windows)
         "Maat-portable-v99.0.0.exe"
     else if (builtin.os.tag == .macos)
-        "Maat-Native-macos-v99.0.0.zip"
+        "Maat-macos-v99.0.0.zip"
     else
         return; // no self-update asset on this platform
     const json = try std.fmt.allocPrint(allocator,

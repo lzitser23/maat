@@ -1,4 +1,4 @@
-// Local file server for the Maat Native shell.
+// Local file server for the Maat shell.
 //
 // Serves files from a single configurable storage root
 // (main.zig passes %APPDATA%\MaatNative) over plain HTTP on

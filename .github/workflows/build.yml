@@ -299,21 +299,21 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: Maat-Native-macos
+          name: Maat-macos
           path: zig-out/package
 
       - name: Upload notarized zip
         if: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && env.NOTARIZE == 'true' }}
         uses: actions/upload-artifact@v7
         with:
-          name: Maat-Native-macos-notarized
+          name: Maat-macos-notarized
           path: zig-out/Maat-macos-notarized.zip
 
       - name: Upload DMG
         if: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && env.NOTARIZE == 'true' }}
         uses: actions/upload-artifact@v7
         with:
-          name: Maat-Native-macos-dmg
+          name: Maat-macos-dmg
           path: zig-out/Maat-macos.dmg
 
   # Rule (Tech Stack note, est. 2026-07-14): OSS ships with built-in release
@@ -354,14 +354,14 @@ jobs:
           # Prefer the notarized ditto-zip (signed + stapled, permissions
           # intact); fall back to zipping the bare package only if the
           # signing secrets weren't configured for this run.
-          if [ -f "Maat-Native-macos-notarized/Maat-macos-notarized.zip" ]; then
-            cp "Maat-Native-macos-notarized/Maat-macos-notarized.zip" "Maat-Native-macos-$GITHUB_REF_NAME.zip"
+          if [ -f "Maat-macos-notarized/Maat-macos-notarized.zip" ]; then
+            cp "Maat-macos-notarized/Maat-macos-notarized.zip" "Maat-macos-$GITHUB_REF_NAME.zip"
           else
             echo "::warning::No notarized macOS build -- releasing an unsigned .app"
-            (cd Maat-Native-macos && zip -qr "../Maat-Native-macos-$GITHUB_REF_NAME.zip" .)
+            (cd Maat-macos && zip -qr "../Maat-macos-$GITHUB_REF_NAME.zip" .)
           fi
-          if [ -f "Maat-Native-macos-dmg/Maat-macos.dmg" ]; then
-            cp "Maat-Native-macos-dmg/Maat-macos.dmg" "Maat-$GITHUB_REF_NAME.dmg"
+          if [ -f "Maat-macos-dmg/Maat-macos.dmg" ]; then
+            cp "Maat-macos-dmg/Maat-macos.dmg" "Maat-$GITHUB_REF_NAME.dmg"
           else
             echo "::warning::No DMG artifact (signing secrets not configured for this run)"
           fi
@@ -369,7 +369,7 @@ jobs:
           # (src-zig/update.zig) verifies downloads against; generated here
           # so they carry the final asset names.
           sha256sum "Maat-portable-$GITHUB_REF_NAME.exe" > "Maat-portable-$GITHUB_REF_NAME.exe.sha256"
-          sha256sum "Maat-Native-macos-$GITHUB_REF_NAME.zip" > "Maat-Native-macos-$GITHUB_REF_NAME.zip.sha256"
+          sha256sum "Maat-macos-$GITHUB_REF_NAME.zip" > "Maat-macos-$GITHUB_REF_NAME.zip.sha256"
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -377,11 +377,11 @@ jobs:
           ASSETS=(
             "artifacts/Maat-portable-$GITHUB_REF_NAME.exe"
             "artifacts/Maat-portable-$GITHUB_REF_NAME.exe.sha256"
-            "artifacts/Maat-Native-macos-$GITHUB_REF_NAME.zip"
-            "artifacts/Maat-Native-macos-$GITHUB_REF_NAME.zip.sha256"
+            "artifacts/Maat-macos-$GITHUB_REF_NAME.zip"
+            "artifacts/Maat-macos-$GITHUB_REF_NAME.zip.sha256"
           )
           [ -f "artifacts/Maat-$GITHUB_REF_NAME.dmg" ] && ASSETS+=("artifacts/Maat-$GITHUB_REF_NAME.dmg")
           gh release create "$GITHUB_REF_NAME" \
-            --title "Maat Native $GITHUB_REF_NAME" \
+            --title "Maat $GITHUB_REF_NAME" \
             --generate-notes \
             "${ASSETS[@]}"

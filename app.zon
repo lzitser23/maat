@@ -1,8 +1,8 @@
 .{
     .id = "com.lzitser.maat-native",
     .name = "maat-native",
-    .display_name = "Maat Native",
-    .version = "0.2.0",
+    .display_name = "Maat",
+    .version = "0.2.1",
     .icons = .{ "assets/icon.png" },
     .platforms = .{ "windows", "macos" },
     .permissions = .{ "window", "dialog", "filesystem", "clipboard", "network" },
@@ -40,6 +40,6 @@
         // bare "error: ParseZon") -- confirmed upstream schema gap.
         // Startup centering is done by hand instead; see
         // `centerMainWindowIfNeeded` in src-zig/runner.zig.
-        .{ .label = "main", .title = "Maat Native", .width = 1440, .height = 940, .titlebar = "chromeless", .restore_state = true },
+        .{ .label = "main", .title = "Maat", .width = 1440, .height = 940, .titlebar = "chromeless", .restore_state = true },
     },
 }
