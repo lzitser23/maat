@@ -347,7 +347,6 @@ test("asset click spotlights and canvas click restores", async ({ page }) => {
 
   await expect(card).toHaveAttribute("data-spotlight", "focused");
   await expect(other).toHaveAttribute("data-spotlight", "dimmed");
-  await expect(page.getByTitle("Open inspector")).toBeVisible();
   await expect(page.getByLabel("Zoom")).toHaveCount(0);
   await expect(page.getByTestId("canvas-minimap")).toHaveCount(0);
   await expect.poll(async () => (await card.boundingBox())?.width ?? 0).toBeGreaterThan(before!.width * 2);
@@ -360,7 +359,6 @@ test("asset click spotlights and canvas click restores", async ({ page }) => {
   await page.mouse.click(canvas!.x + canvas!.width - 24, canvas!.y + 24);
 
   await expect(card).not.toHaveAttribute("data-spotlight", "focused");
-  await expect(page.getByTitle("Open inspector")).toHaveCount(0);
   await expect(page.getByLabel("Zoom")).toBeVisible();
   await expect(page.getByTestId("canvas-minimap")).toBeVisible();
   expect(Number(await zoom.inputValue())).toBe(startingZoom);
@@ -414,47 +412,78 @@ test("wheel pans, ctrl+wheel zooms, and explicit inspector metadata work", async
   await page.getByTitle("Reset view").click();
   await expect.poll(async () => Number(await zoom.inputValue())).toBe(startingZoom);
 
+  // Open the docked inspector before spotlighting: a click spotlights the card over the whole
+  // canvas, which would cover the bottom-right toggle. Selection then drives the contents.
+  await expect(page.getByText("Inspector", { exact: true })).toHaveCount(0);
+  await page.getByTitle("Show inspector").click();
   const board = await cardCenter(page, "Eagle brand board");
   await page.mouse.click(board.x, board.y);
-  await expect(page.getByText("Inspector", { exact: true })).toHaveCount(0);
-  await page.getByTitle("Open inspector").click();
   await expect(page.getByText("identity").nth(1)).toBeVisible();
   await expect(page.getByText("Primary board for the product language.")).toBeVisible();
   await expect(page.getByText("https://example.com/maat")).toBeVisible();
 });
 
-test("Inspector shows a Caption section for an asset that has one, and omits it otherwise", async ({ page }) => {
+test("trackpad pinch (WebKit gesture events) zooms the canvas", async ({ page }) => {
+  // macOS WKWebView delivers pinch as gesturestart/change/end, never ctrl+wheel. Chromium can't
+  // produce the real thing, so dispatch synthetic events carrying the same scale/clientX/clientY
+  // payload the canvas listener reads.
+  const zoom = page.getByLabel("Zoom");
+  const startingZoom = Number(await zoom.inputValue());
+  await page.evaluate(() => {
+    const canvas = document.querySelector('[data-testid="maat-canvas"]');
+    if (!canvas) throw new Error("canvas not found");
+    const rect = canvas.getBoundingClientRect();
+    const fire = (type: string, scale: number) => {
+      const event = new Event(type, { bubbles: true, cancelable: true }) as Event & {
+        scale: number;
+        clientX: number;
+        clientY: number;
+      };
+      event.scale = scale;
+      event.clientX = rect.left + rect.width / 2;
+      event.clientY = rect.top + rect.height / 2;
+      canvas.dispatchEvent(event);
+    };
+    fire("gesturestart", 1);
+    fire("gesturechange", 1.5);
+    fire("gestureend", 1.5);
+  });
+  await expect.poll(async () => Number(await zoom.inputValue())).toBeGreaterThan(startingZoom);
+});
+
+test("a dataset sidecar caption prefills the Prompt box, and only for the asset that has one", async ({ page }) => {
+  // Open the docked inspector first -- clicking a card spotlights it over the whole canvas,
+  // which would cover the bottom-right toggle.
+  await page.getByTitle("Show inspector").click();
+  await expect(page.getByLabel("Prompt")).toHaveCount(0);
+
   const withCaption = await cardCenter(page, "Palette capture");
   await page.mouse.click(withCaption.x, withCaption.y);
-  await page.getByTitle("Open inspector").click();
-  await expect(page.getByText("Caption", { exact: true })).toBeVisible();
-  await expect(page.getByText("A warm-toned palette swatch captured from a desktop wallpaper.")).toBeVisible();
+  await expect(page.getByLabel("Prompt")).toHaveValue("A warm-toned palette swatch captured from a desktop wallpaper.");
 
-  // Clear the current spotlight via a scope click, not a canvas-corner
-  // click -- the spotlighted card is enlarged and can cover any "empty"
-  // corner (especially once the docked Inspector narrows the canvas), so a
-  // coordinate click is not guaranteed to land on background. The sibling
-  // Prompt test below documents the same choice.
+  // Deselect via a scope click, not a canvas-corner click -- the spotlighted
+  // card is enlarged and can cover any "empty" corner (especially once the
+  // docked Inspector narrows the canvas), so a coordinate click is not
+  // guaranteed to land on background. The sibling Prompt test below
+  // documents the same choice.
   await page.getByRole("button", { name: /All\s*10/ }).click();
-  await expect(page.getByText("Caption", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Prompt")).toHaveCount(0);
 
+  // Clicking the next card swaps the panel contents in place -- selection is
+  // the only driver, no per-card control involved.
   const withoutCaption = await cardCenter(page, "Eagle brand board");
   await page.mouse.click(withoutCaption.x, withoutCaption.y);
-  await page.getByTitle("Open inspector").click();
-  // The Prompt editor renders for every selected asset -- its presence
-  // proves the inspector really switched to the new selection, so the
-  // caption's absence below is meaningful rather than a closed inspector.
-  await expect(page.getByLabel("Prompt")).toBeVisible();
-  await expect(page.getByText("Caption", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Prompt")).toHaveValue("");
 });
 
 test("typing a Prompt in the Inspector persists across deselect/reselect", async ({ page }) => {
+  await page.getByTitle("Show inspector").click();
   const card = await cardCenter(page, "Palette capture");
   await page.mouse.click(card.x, card.y);
-  await page.getByTitle("Open inspector").click();
 
   const prompt = page.getByLabel("Prompt");
-  await expect(prompt).toHaveValue("");
+  // Prefilled from the dataset sidecar caption until a prompt is saved.
+  await expect(prompt).toHaveValue("A warm-toned palette swatch captured from a desktop wallpaper.");
   await prompt.fill("a photorealistic desktop wallpaper, warm palette, 4k");
   await prompt.blur();
 
@@ -471,8 +500,8 @@ test("typing a Prompt in the Inspector persists across deselect/reselect", async
   // coordinates -- safer against any layout settling since deselecting.
   const reselectCard = await cardCenter(page, "Palette capture");
   await page.mouse.click(reselectCard.x, reselectCard.y);
-  await page.getByTitle("Open inspector").click();
 
+  // The saved prompt now wins over the caption prefill.
   await expect(page.getByLabel("Prompt")).toHaveValue("a photorealistic desktop wallpaper, warm palette, 4k");
 });
 
@@ -718,7 +747,6 @@ test("Escape exits a focused asset in Canvas mode", async ({ page }) => {
 
   await page.keyboard.press("Escape");
   await expect(card).not.toHaveAttribute("data-spotlight", "focused");
-  await expect(page.getByTitle("Open inspector")).toHaveCount(0);
 });
 
 test("Escape exits a focused asset in Grid mode", async ({ page }) => {

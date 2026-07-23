@@ -60,7 +60,6 @@ type CanvasProps = {
   onDrawingChange: (boardId: string, drawingJson: string) => void;
   onFocusNode: (nodeId: string) => void;
   onClearFocus: () => void;
-  onOpenInspector: (nodeId: string) => void;
   onRequestDraw: () => void;
   onFrameChange: (frames: Frame[], nodes: BoardNode[], options?: { commit?: boolean }) => void;
   onDeleteFrame: (frameId: string) => void;
@@ -112,13 +111,19 @@ export function Canvas({
   onDrawingChange,
   onFocusNode,
   onClearFocus,
-  onOpenInspector,
   onRequestDraw,
   onFrameChange,
   onDeleteFrame,
 }: CanvasProps) {
   const [dropActive, setDropActive] = useState(false);
   const [panning, setPanning] = useState(false);
+  // True while the viewport (or a drag) is actively moving. Cards carry a 220ms transform
+  // transition so layout changes glide (auto-arrange, spotlight enter/exit) — but during
+  // interactive movement every tick would retrigger that ease, leaving each card perpetually
+  // chasing its target. That reads as the whole board lagging/stuttering, worst with macOS
+  // momentum scrolling. This flag lets CSS drop the transform transition while moving.
+  const [interacting, setInteracting] = useState(false);
+  const interactionTimerRef = useRef<number | null>(null);
   const [editingFrameId, setEditingFrameId] = useState<string | null>(null);
   const [excalidrawApi, setExcalidrawApi] = useState<ExcalidrawImperativeAPI | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
@@ -145,6 +150,68 @@ export function Canvas({
   useEffect(() => {
     viewportRef.current = { scale, offsetX, offsetY };
   }, [offsetX, offsetY, scale]);
+
+  // Wheel/gesture streams have no end event, so "interacting" decays shortly after the last tick.
+  const markViewportInteraction = useCallback(() => {
+    setInteracting(true);
+    if (interactionTimerRef.current !== null) window.clearTimeout(interactionTimerRef.current);
+    interactionTimerRef.current = window.setTimeout(() => {
+      interactionTimerRef.current = null;
+      setInteracting(false);
+    }, 200);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (interactionTimerRef.current !== null) window.clearTimeout(interactionTimerRef.current);
+    },
+    [],
+  );
+
+  // macOS WKWebView reports trackpad pinch as WebKit's proprietary gesturestart/change/end events,
+  // not the ctrl+wheel Chromium synthesizes — without these listeners pinch does nothing on the
+  // board while Excalidraw (which subscribes to them) still zooms in drawing mode. Chromium never
+  // fires them, so this is inert on Windows. React has no onGestureChange prop; attach natively.
+  useEffect(() => {
+    const element = canvasRef.current;
+    if (!element || drawingMode) return;
+
+    type WebKitGestureEvent = Event & { scale: number; clientX: number; clientY: number };
+    // Cumulative pinch scale is relative to the gesture's start; 0 doubles as "no active gesture".
+    let baseScale = 0;
+
+    const handleStart = (event: Event) => {
+      if (event.target instanceof Element && event.target.closest("[data-model-viewer]")) return;
+      event.preventDefault();
+      baseScale = viewportRef.current.scale;
+    };
+    const handleChange = (event: Event) => {
+      if (baseScale === 0) return;
+      event.preventDefault();
+      markViewportInteraction();
+      const gesture = event as WebKitGestureEvent;
+      const current = viewportRef.current;
+      const rect = element.getBoundingClientRect();
+      const nextScale = clamp(baseScale * gesture.scale, MIN_SCALE, MAX_SCALE);
+      const pointer = { x: gesture.clientX - rect.left, y: gesture.clientY - rect.top };
+      const worldX = (pointer.x - current.offsetX) / current.scale;
+      const worldY = (pointer.y - current.offsetY) / current.scale;
+      onViewportChange(nextScale, pointer.x - worldX * nextScale, pointer.y - worldY * nextScale);
+    };
+    const handleEnd = (event: Event) => {
+      event.preventDefault();
+      baseScale = 0;
+    };
+
+    element.addEventListener("gesturestart", handleStart);
+    element.addEventListener("gesturechange", handleChange);
+    element.addEventListener("gestureend", handleEnd);
+    return () => {
+      element.removeEventListener("gesturestart", handleStart);
+      element.removeEventListener("gesturechange", handleChange);
+      element.removeEventListener("gestureend", handleEnd);
+    };
+  }, [drawingMode, markViewportInteraction, onViewportChange]);
 
   useEffect(() => {
     lastDrawingJsonRef.current = drawingJson;
@@ -285,6 +352,7 @@ export function Canvas({
     // before the event ever reaches the viewer's canvas.
     if (event.target instanceof Element && event.target.closest("[data-model-viewer]")) return;
     event.preventDefault();
+    markViewportInteraction();
     const current = viewportRef.current;
 
     // Ctrl/Cmd + wheel (or pinch-zoom, which browsers report as ctrl+wheel) zooms, centered on the pointer.
@@ -441,6 +509,7 @@ export function Canvas({
     if (!drag || drag.pointerId !== event.pointerId) return;
 
     if (drag.type === "pan") {
+      markViewportInteraction();
       onViewportChange(scale, drag.startOffsetX + event.clientX - drag.startClientX, drag.startOffsetY + event.clientY - drag.startClientY);
       return;
     }
@@ -449,6 +518,7 @@ export function Canvas({
     const deltaY = event.clientY - drag.startClientY;
     if (!drag.moved && Math.hypot(deltaX, deltaY) < CLICK_DRAG_TOLERANCE) return;
     drag.moved = true;
+    markViewportInteraction();
 
     const nextNode = {
       ...drag.startNode,
@@ -551,6 +621,7 @@ export function Canvas({
     if (!drag || drag.pointerId !== event.pointerId) return;
     if (!drag.moved && Math.hypot(event.clientX - drag.startClientX, event.clientY - drag.startClientY) < CLICK_DRAG_TOLERANCE) return;
     drag.moved = true;
+    markViewportInteraction();
     const { frame, nodes } = computeFrameDrag(drag, event);
     onFrameChange([frame], nodes, { commit: false });
   };
@@ -585,6 +656,7 @@ export function Canvas({
     <div
       ref={canvasRef}
       data-testid="maat-canvas"
+      data-interacting={interacting ? "true" : undefined}
       className="canvas-grid relative h-full w-full overflow-hidden"
       onWheelCapture={drawingMode ? undefined : handleWheel}
       onPasteCapture={handlePaste}
@@ -621,6 +693,7 @@ export function Canvas({
             scrollX={excalidrawScrollX}
             scrollY={excalidrawScrollY}
             zoom={toExcalidrawZoom(scale)}
+            syncViewport={drawingMode || drawingElementCount > 0}
             onApiReady={setExcalidrawApi}
             onChange={handleExcalidrawChange}
           />
@@ -670,7 +743,6 @@ export function Canvas({
               spotlightOffset={spotlight === "dimmed" && focusedNode ? getSpotlightOffset(node, focusedNode) : null}
               visible={nodeIntersectsViewport(node, { scale, offsetX, offsetY }, canvasSize)}
               onPointerDown={handleNodePointerDown}
-              onOpenInspector={onOpenInspector}
             />
           );
         })}
@@ -786,7 +858,6 @@ function AssetCard({
   spotlightOffset,
   visible,
   onPointerDown,
-  onOpenInspector,
 }: {
   asset: Asset;
   node: BoardNode;
@@ -799,7 +870,6 @@ function AssetCard({
   spotlightOffset: { x: number; y: number } | null;
   visible: boolean;
   onPointerDown: (event: PointerEvent<HTMLElement>, node: BoardNode) => void;
-  onOpenInspector: (nodeId: string) => void;
 }) {
   const Icon = assetIcon(asset.kind);
   const focused = spotlight === "focused";
@@ -816,9 +886,8 @@ function AssetCard({
       ? (canvasSize.height - node.height * effectiveScale) / 2
       : offsetY + node.y * scale + (spotlightOffset?.y ?? 0);
   // Focused card is sized to its final pixel dimensions directly (translate only, no CSS `scale`)
-  // instead of the regular grid's translate+scale transform. Scaling the whole card would also scale
-  // the overlay chrome inside it (the inspect button); counter-scaling that button back down is a
-  // scale-up-then-scale-down round trip that visibly blurs it and displaces its position on some
+  // instead of the regular grid's translate+scale transform: scaling up any overlay chrome inside the
+  // card and counter-scaling it back down visibly blurs it and displaces its position on some
   // compositors (observed on macOS/WebKit) -- sizing directly avoids the round trip entirely.
   const style: CSSProperties = focused
     ? {
@@ -850,7 +919,7 @@ function AssetCard({
       }}
     >
       {focused ? (
-        <FocusedAssetContent asset={asset} onOpenInspector={() => onOpenInspector(node.id)} />
+        <FocusedAssetContent asset={asset} />
       ) : (
         <div className="relative flex h-full flex-col">
           <div className="asset-card__media min-h-0 flex-1 overflow-hidden bg-[var(--asset-media)]">

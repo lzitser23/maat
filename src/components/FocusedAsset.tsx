@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import { Info, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { assetIcon, assetKindLabel } from "../lib/asset";
 import { assetModelUrl, assetOriginalUrl, assetPreviewUrl } from "../lib/bridge";
 import { formatBytes } from "../lib/format";
@@ -24,10 +24,10 @@ export function getFocusedScale(node: { width: number; height: number }, contain
 }
 
 // The focused/spotlight content shared by Canvas's focused AssetCard and Grid's focus overlay: full-res
-// image swap, the 3D orbit viewer for models, the inspect button, and the name/kind/size footer (the
+// image swap, the 3D orbit viewer for models, and the name/kind/size footer (the
 // footer is hidden while focused via the `.asset-card[data-spotlight="focused"]` CSS rule the caller's
 // wrapper is expected to carry).
-export function FocusedAssetContent({ asset, onOpenInspector }: { asset: Asset; onOpenInspector: () => void }) {
+export function FocusedAssetContent({ asset }: { asset: Asset }) {
   const Icon = assetIcon(asset.kind);
   const modelUrl = asset.kind === "model" ? assetModelUrl(asset) : null;
   const previewUrl = assetPreviewUrl(asset);
@@ -42,19 +42,6 @@ export function FocusedAssetContent({ asset, onOpenInspector }: { asset: Asset; 
 
   return (
     <div className="relative flex h-full flex-col">
-      <button
-        type="button"
-        aria-label="Open inspector"
-        title="Open inspector"
-        className="asset-card__inspect"
-        onPointerDown={(event) => event.stopPropagation()}
-        onClick={(event) => {
-          event.stopPropagation();
-          onOpenInspector();
-        }}
-      >
-        <Info className="h-4 w-4" />
-      </button>
       <div className="asset-card__media min-h-0 flex-1 overflow-hidden bg-[var(--asset-media)]">
         {modelUrl ? (
           <Suspense

@@ -93,7 +93,6 @@ export default function App() {
   const [canvasSize, setCanvasSize] = useState({ width: 1120, height: 760 });
   const [drawingMode, setDrawingMode] = useState(false);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
-  const [inspectorNodeId, setInspectorNodeId] = useState<string | null>(null);
   const {
     theme,
     setTheme,
@@ -378,7 +377,6 @@ export default function App() {
       setView(next);
       select([]);
       setFocusedNodeId(null);
-      setInspectorNodeId(null);
       setStatus("Ready");
     } catch (error) {
       console.error(error);
@@ -413,14 +411,12 @@ export default function App() {
     const node = view.nodes.find((item) => item.id === nodeId);
     if (!node) return;
     setFocusedNodeId(nodeId);
-    setInspectorNodeId(null);
     select([nodeId]);
   };
 
   const handleClearFocus = () => {
     if (!focusedNodeId) return;
     setFocusedNodeId(null);
-    setInspectorNodeId(null);
     select([]);
   };
 
@@ -440,12 +436,6 @@ export default function App() {
     return () => window.removeEventListener("keydown", handleEscape);
   }, [focusedNodeId, handleClearFocus, viewMode, setViewMode]);
 
-  const handleOpenInspector = (nodeId: string) => {
-    setInspectorNodeId(nodeId);
-    setInspectorOpen(true);
-    select([nodeId]);
-  };
-
   const zoomBy = (factor: number) => {
     const current = viewportRef.current;
     const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, current.scale * factor));
@@ -458,6 +448,9 @@ export default function App() {
 
   const handleScopeChange = (nextScope: BoardScope) => {
     closeSpotlight();
+    // The new scope may filter the selected nodes out entirely -- and the inspector follows the
+    // selection -- so scope navigation deselects, same as switching boards.
+    select([]);
     setScope(nextScope);
     setStatus(`Scope: ${scopeLabel(nextScope)}`);
     if (!view) return;
@@ -513,7 +506,6 @@ export default function App() {
 
   const closeSpotlight = useCallback(() => {
     setFocusedNodeId(null);
-    setInspectorNodeId(null);
   }, []);
 
   const handleTrashSelection = useCallback(async () => {
@@ -855,7 +847,9 @@ export default function App() {
     runWindowAction(() => startWindowResize(nearLeft ? "top-left" : nearRight ? "top-right" : "top"));
   };
 
-  const pickedAssets = selectedAssets(view, inspectorNodeId ? [inspectorNodeId] : []);
+  // Selection drives the inspector directly: clicking any card (or spotlighting one -- focus
+  // selects too) swaps the docked panel's contents to that asset.
+  const pickedAssets = selectedAssets(view, selectedIds);
   const inspectorPanelOpen = inspectorOpen && !immersive;
   const immersiveInspectorOpen = inspectorOpen && immersive;
   const visibleNodes = filteredNodes(view, scope, query);
@@ -1155,7 +1149,6 @@ export default function App() {
               onSelect={select}
               onFocusNode={handleFocusNode}
               onClearFocus={handleClearFocus}
-              onOpenInspector={handleOpenInspector}
             />
           ) : (
           <Canvas
@@ -1189,7 +1182,6 @@ export default function App() {
             onPasteFiles={runClipboardImport}
             onFocusNode={handleFocusNode}
             onClearFocus={handleClearFocus}
-            onOpenInspector={handleOpenInspector}
             onDrawingChange={handleDrawingChange}
             onRequestDraw={() => {
               closeSpotlight();
