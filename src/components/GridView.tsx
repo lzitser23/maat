@@ -14,12 +14,11 @@ type GridViewProps = {
   onSelect: (ids: string[]) => void;
   onFocusNode: (nodeId: string) => void;
   onClearFocus: () => void;
-  onOpenInspector: (nodeId: string) => void;
 };
 
 // Grid mode: a scrollable masonry page. Positions here are purely visual (reuses the shortest-column
 // layout from lib/layout.ts) and are never written back to board_nodes — Canvas keeps the real positions.
-export function GridView({ view, nodes, selectedIds, focusedNodeId, onSelect, onFocusNode, onClearFocus, onOpenInspector }: GridViewProps) {
+export function GridView({ view, nodes, selectedIds, focusedNodeId, onSelect, onFocusNode, onClearFocus }: GridViewProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const assetById = useMemo(() => new Map(view.assets.map((asset) => [asset.id, asset])), [view.assets]);
@@ -98,7 +97,7 @@ export function GridView({ view, nodes, selectedIds, focusedNodeId, onSelect, on
             style={{ width: focusedNode.width * focusedScale, height: focusedNode.height * focusedScale }}
             onClick={(event) => event.stopPropagation()}
           >
-            <FocusedAssetContent asset={focusedAsset} onOpenInspector={() => onOpenInspector(focusedNode.id)} />
+            <FocusedAssetContent asset={focusedAsset} />
           </article>
         </div>
       )}

@@ -60,7 +60,6 @@ type CanvasProps = {
   onDrawingChange: (boardId: string, drawingJson: string) => void;
   onFocusNode: (nodeId: string) => void;
   onClearFocus: () => void;
-  onOpenInspector: (nodeId: string) => void;
   onRequestDraw: () => void;
   onFrameChange: (frames: Frame[], nodes: BoardNode[], options?: { commit?: boolean }) => void;
   onDeleteFrame: (frameId: string) => void;
@@ -112,7 +111,6 @@ export function Canvas({
   onDrawingChange,
   onFocusNode,
   onClearFocus,
-  onOpenInspector,
   onRequestDraw,
   onFrameChange,
   onDeleteFrame,
@@ -745,7 +743,6 @@ export function Canvas({
               spotlightOffset={spotlight === "dimmed" && focusedNode ? getSpotlightOffset(node, focusedNode) : null}
               visible={nodeIntersectsViewport(node, { scale, offsetX, offsetY }, canvasSize)}
               onPointerDown={handleNodePointerDown}
-              onOpenInspector={onOpenInspector}
             />
           );
         })}
@@ -861,7 +858,6 @@ function AssetCard({
   spotlightOffset,
   visible,
   onPointerDown,
-  onOpenInspector,
 }: {
   asset: Asset;
   node: BoardNode;
@@ -874,7 +870,6 @@ function AssetCard({
   spotlightOffset: { x: number; y: number } | null;
   visible: boolean;
   onPointerDown: (event: PointerEvent<HTMLElement>, node: BoardNode) => void;
-  onOpenInspector: (nodeId: string) => void;
 }) {
   const Icon = assetIcon(asset.kind);
   const focused = spotlight === "focused";
@@ -891,9 +886,8 @@ function AssetCard({
       ? (canvasSize.height - node.height * effectiveScale) / 2
       : offsetY + node.y * scale + (spotlightOffset?.y ?? 0);
   // Focused card is sized to its final pixel dimensions directly (translate only, no CSS `scale`)
-  // instead of the regular grid's translate+scale transform. Scaling the whole card would also scale
-  // the overlay chrome inside it (the inspect button); counter-scaling that button back down is a
-  // scale-up-then-scale-down round trip that visibly blurs it and displaces its position on some
+  // instead of the regular grid's translate+scale transform: scaling up any overlay chrome inside the
+  // card and counter-scaling it back down visibly blurs it and displaces its position on some
   // compositors (observed on macOS/WebKit) -- sizing directly avoids the round trip entirely.
   const style: CSSProperties = focused
     ? {
@@ -925,7 +919,7 @@ function AssetCard({
       }}
     >
       {focused ? (
-        <FocusedAssetContent asset={asset} onOpenInspector={() => onOpenInspector(node.id)} />
+        <FocusedAssetContent asset={asset} />
       ) : (
         <div className="relative flex h-full flex-col">
           <div className="asset-card__media min-h-0 flex-1 overflow-hidden bg-[var(--asset-media)]">
