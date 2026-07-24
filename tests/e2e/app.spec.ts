@@ -634,6 +634,25 @@ test("created boards can be deleted", async ({ page }) => {
   await expect(page.getByText("Maat Studio")).toBeVisible();
 });
 
+test("a multi-file import shows the progress pill until it completes", async ({ page }) => {
+  // Five files at the mock's 60ms-per-item progress cadence gives the pill a
+  // ~300ms visibility window -- comfortably catchable by the default polling
+  // expect, while keeping the suite fast.
+  await page.evaluate(() => {
+    const data = new DataTransfer();
+    for (let i = 0; i < 5; i++) {
+      data.items.add(new File([new Uint8Array([137, 80, 78, 71, i])], `batch-${i}.png`, { type: "image/png" }));
+    }
+    document.body.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: data }));
+  });
+
+  const pill = page.getByTestId("import-progress");
+  await expect(pill).toBeVisible();
+  await expect(pill).toBeHidden();
+  await expect(page.locator("article")).toHaveCount(15);
+  await expect(page.locator("article").getByText("batch-4.png", { exact: true })).toBeVisible();
+});
+
 test("window paste and drop import image assets", async ({ page }) => {
   await page.evaluate(() => {
     const data = new DataTransfer();

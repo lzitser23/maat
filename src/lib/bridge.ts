@@ -37,14 +37,31 @@ async function invoke<T>(command: string, payload?: Record<string, unknown>): Pr
   return (await response.json()) as T;
 }
 
-async function pollImportJob(jobId: string): Promise<ImportReport> {
+export type ImportProgress = { completed: number; total: number };
+
+// Mock-mode helper: walks the progress callback through each item with a
+// human-visible delay so the progress pill is exercisable (and e2e-testable)
+// in browser preview, where imports are otherwise instant.
+async function mockProgressSteps(count: number, onProgress?: (progress: ImportProgress) => void) {
+  if (!onProgress) return;
+  for (let completed = 0; completed <= count; completed++) {
+    onProgress({ completed, total: count });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  }
+}
+
+async function pollImportJob(jobId: string, onProgress?: (progress: ImportProgress) => void): Promise<ImportReport> {
   let delayMs = IMPORT_JOB_POLL_INTERVAL_MS;
   for (;;) {
     // A rejection here (backend dead, unknown jobId) is not caught -- it
     // propagates out of this function and rejects the import promise, same
     // as any other await. No overall timeout: large imports legitimately
     // take a long time.
-    const status = await invoke<{ done: boolean; report: ImportReport | null; error: string | null }>("import_job_status", { jobId });
+    const status = await invoke<{ done: boolean; report: ImportReport | null; error: string | null; progress?: ImportProgress | null }>(
+      "import_job_status",
+      { jobId },
+    );
+    if (!status.done && status.progress && onProgress) onProgress(status.progress);
     if (status.done) {
       if (status.error) throw new Error(status.error);
       return status.report as ImportReport;
@@ -219,8 +236,9 @@ export async function deleteBoard(boardId: string): Promise<AppStateDto> {
   return { boards, activeBoardId, view };
 }
 
-export async function importPaths(boardId: string, paths: string[]): Promise<ImportReport> {
+export async function importPaths(boardId: string, paths: string[], onProgress?: (progress: ImportProgress) => void): Promise<ImportReport> {
   if (!isNative()) {
+    await mockProgressSteps(paths.length, onProgress);
     mockImportAssets(boardId, paths.map((path) => path.split(/[\\/]/).pop() || "Imported file"));
     return {
       imported: paths.length,
@@ -231,11 +249,12 @@ export async function importPaths(boardId: string, paths: string[]): Promise<Imp
     };
   }
   const { jobId } = await invoke<{ jobId: string }>("import_paths_start", { boardId, paths });
-  return pollImportJob(jobId);
+  return pollImportJob(jobId, onProgress);
 }
 
-export async function importExternalUrls(boardId: string, urls: string[]): Promise<ImportReport> {
+export async function importExternalUrls(boardId: string, urls: string[], onProgress?: (progress: ImportProgress) => void): Promise<ImportReport> {
   if (!isNative()) {
+    await mockProgressSteps(urls.length, onProgress);
     mockImportAssets(boardId, urls.map((url) => url.split("/").pop()?.split("?")[0] || "Remote image"));
     return {
       imported: urls.length,
@@ -246,7 +265,7 @@ export async function importExternalUrls(boardId: string, urls: string[]): Promi
     };
   }
   const { jobId } = await invoke<{ jobId: string }>("import_urls_start", { boardId, urls });
-  return pollImportJob(jobId);
+  return pollImportJob(jobId, onProgress);
 }
 
 // Wire shape `import_clipboard_start` accepts: either shape, per item (see
@@ -258,8 +277,13 @@ type NativeClipboardItem = {
   uploadPath?: string;
 };
 
-export async function importClipboardItems(boardId: string, items: ClipboardImportItem[]): Promise<ImportReport> {
+export async function importClipboardItems(
+  boardId: string,
+  items: ClipboardImportItem[],
+  onProgress?: (progress: ImportProgress) => void,
+): Promise<ImportReport> {
   if (!isNative()) {
+    await mockProgressSteps(items.length, onProgress);
     mockImportAssets(boardId, items.map((item) => item.name || "Pasted image"));
     return {
       imported: items.length,
@@ -308,7 +332,7 @@ export async function importClipboardItems(boardId: string, items: ClipboardImpo
   }
 
   const { jobId } = await invoke<{ jobId: string }>("import_clipboard_start", { boardId, items: nativeItems });
-  return pollImportJob(jobId);
+  return pollImportJob(jobId, onProgress);
 }
 
 export async function updateNodes(boardId: string, nodes: NodeUpdate[]): Promise<void> {
