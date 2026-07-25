@@ -16,7 +16,8 @@
     "native:package:macos": "node scripts/package-fixup.mjs macos",
     "test:zig": "zig build test",
     "smoke:native": "node scripts/native-smoke.mjs",
-    "smoke:packaged": "node scripts/packaged-smoke.mjs"
+    "smoke:packaged": "node scripts/packaged-smoke.mjs",
+    "smoke:packaged:macos": "node scripts/macos-packaged-smoke.mjs"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "0.18.1",

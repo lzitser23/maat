@@ -32,7 +32,7 @@ async function invoke<T>(command: string, payload?: Record<string, unknown>): Pr
   if (!isBridgeSpillMarker(result)) return result;
 
   const serverInfo = await ensureServerInfo();
-  const response = await fetch(`${serverInfo.assetBase}/file?p=${encodeURIComponent(result.__maatSpillPath)}`);
+  const response = await fetch(`${serverInfo.assetBase}/file?p=${encodeURIComponent(result.__maatSpillPath)}&t=${serverInfo.uploadToken}`);
   if (!response.ok) throw new Error(`Could not read oversized bridge response: HTTP ${response.status}`);
   return (await response.json()) as T;
 }
@@ -525,23 +525,23 @@ export function assetPreviewUrl(asset: Asset): string | null {
     // thumbnail is an image; managedPath is the GLB itself and must never be an <img> src.
     if (asset.previewStatus !== "ready" || !asset.thumbnailPath) return null;
     if (!isNative()) return asset.thumbnailPath;
-    if (!assetBaseCache) {
+    if (!assetBaseCache || !uploadTokenCache) {
       void ensureAssetBase().catch(() => undefined);
       return null;
     }
-    return `${assetBaseCache}/file?p=${encodeURIComponent(asset.thumbnailPath)}`;
+    return `${assetBaseCache}/file?p=${encodeURIComponent(asset.thumbnailPath)}&t=${uploadTokenCache}`;
   }
   if (asset.kind !== "image" || asset.previewStatus === "fallback") return null;
   const previewPath = asset.thumbnailPath ?? asset.managedPath;
   if (isNative()) {
     if (!previewPath) return null;
-    if (!assetBaseCache) {
+    if (!assetBaseCache || !uploadTokenCache) {
       // Fire-and-forget: swallow so a rejection doesn't surface as an
       // unhandled promise rejection on every render while retrying.
       void ensureAssetBase().catch(() => undefined);
       return null;
     }
-    return `${assetBaseCache}/file?p=${encodeURIComponent(previewPath)}`;
+    return `${assetBaseCache}/file?p=${encodeURIComponent(previewPath)}&t=${uploadTokenCache}`;
   }
   return previewPath ? previewPath : mockImageDataUrl(asset);
 }
@@ -552,11 +552,11 @@ export function assetOriginalUrl(asset: Asset): string | null {
   if (asset.kind !== "image" || asset.previewStatus === "fallback") return null;
   if (isNative()) {
     if (!asset.managedPath) return null;
-    if (!assetBaseCache) {
+    if (!assetBaseCache || !uploadTokenCache) {
       void ensureAssetBase().catch(() => undefined);
       return null;
     }
-    return `${assetBaseCache}/file?p=${encodeURIComponent(asset.managedPath)}`;
+    return `${assetBaseCache}/file?p=${encodeURIComponent(asset.managedPath)}&t=${uploadTokenCache}`;
   }
   return asset.managedPath ? asset.managedPath : mockImageDataUrl(asset);
 }
@@ -566,11 +566,11 @@ export function assetOriginalUrl(asset: Asset): string | null {
 export function assetModelUrl(asset: Asset): string | null {
   if (asset.kind !== "model" || !asset.managedPath) return null;
   if (!isNative()) return asset.managedPath;
-  if (!assetBaseCache) {
+  if (!assetBaseCache || !uploadTokenCache) {
     void ensureAssetBase().catch(() => undefined);
     return null;
   }
-  return `${assetBaseCache}/file?p=${encodeURIComponent(asset.managedPath)}`;
+  return `${assetBaseCache}/file?p=${encodeURIComponent(asset.managedPath)}&t=${uploadTokenCache}`;
 }
 
 // Persists a webview-rendered preview PNG as an asset's thumbnail: uploads the bytes via

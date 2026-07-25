@@ -421,11 +421,8 @@ pub fn applyStaged(allocator: std.mem.Allocator, io: std.Io, storage_root: []con
         defer allocator.free(log_esc);
         const marker_esc = try escapePowershellLiteral(allocator, error_marker);
         defer allocator.free(marker_esc);
-        const script_esc = try escapePowershellLiteral(allocator, script_path);
-        defer allocator.free(script_esc);
 
         const script = try std.fmt.allocPrint(allocator,
-            \\param([switch]$Elevated)
             \\$ErrorActionPreference = 'Stop'
             \\$procId = {d}
             \\$source = '{s}'
@@ -434,7 +431,6 @@ pub fn applyStaged(allocator: std.mem.Allocator, io: std.Io, storage_root: []con
             \\$staged = "$target.update"
             \\$log = '{s}'
             \\$errorMarker = '{s}'
-            \\$script = '{s}'
             \\
             \\function Write-UpdateLog([string]$message) {{
             \\  try {{ Add-Content -LiteralPath $log -Value "$((Get-Date).ToString('s')) $message" }} catch {{}}
@@ -471,16 +467,6 @@ pub fn applyStaged(allocator: std.mem.Allocator, io: std.Io, storage_root: []con
             \\  }}
             \\}}
             \\
-            \\if (-not $Elevated) {{
-            \\  try {{
-            \\    Write-UpdateLog "Retrying update with elevation."
-            \\    Start-Process -FilePath "powershell.exe" -Verb RunAs -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $script, "-Elevated")
-            \\    exit 0
-            \\  }} catch {{
-            \\    Write-UpdateLog "Elevation failed: $($_.Exception.Message)"
-            \\  }}
-            \\}}
-            \\
             \\Write-UpdateLog "Update failed after retries."
             \\try {{
             \\  Set-Content -LiteralPath $errorMarker -Value "The last update failed after Maat closed; the previous version was restored. See $log for details."
@@ -493,7 +479,7 @@ pub fn applyStaged(allocator: std.mem.Allocator, io: std.Io, storage_root: []con
             \\}} catch {{}}
             \\exit 1
             \\
-        , .{ pid, source_esc, target_esc, log_esc, marker_esc, script_esc });
+        , .{ pid, source_esc, target_esc, log_esc, marker_esc });
         defer allocator.free(script);
         try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = script_path, .data = script });
 

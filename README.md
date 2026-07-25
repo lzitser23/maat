@@ -19,7 +19,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-orange" alt="Platform: Windows | macOS" />
-  <img src="https://img.shields.io/badge/Native%20SDK-0.4-24C8DB" alt="Native SDK" />
+  <img src="https://img.shields.io/badge/Native%20SDK-0.5.4-24C8DB" alt="Native SDK" />
   <img src="https://img.shields.io/badge/React-19-61DAFB" alt="React 19" />
   <img src="https://img.shields.io/badge/Zig-0.16-000000" alt="Zig 0.16" />
   <img src="https://img.shields.io/badge/local--first-no%20cloud-1B1B18" alt="Local-first, no cloud" />
@@ -164,7 +164,7 @@ pnpm native:package:macos  # package for macOS (.app bundle)
 
 ### Branches & releases
 
-PRs land on **`dev`** (the default branch); merging `dev` → `main` is the promotion step, where CI additionally signs and notarizes the macOS app. Pushing a `v*` tag publishes a GitHub release with both platforms' builds — the tag must match the version in `app.zon` and `package.json`, or the release job fails.
+PRs land on **`dev`**; merging `dev` → **`main`** (the default branch) is the promotion step, where CI additionally signs and notarizes the macOS app. Pushing a `v*` tag publishes a GitHub release with both platforms' builds — the tag must match the version in `app.zon` and `package.json`, or the release job fails.
 
 ### Project Structure
 
