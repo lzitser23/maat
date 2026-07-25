@@ -196,6 +196,10 @@ pub fn build(b: *std.Build) void {
     const dev_step = b.step("dev", "Run the frontend dev server and native shell");
     dev_step.dependOn(&dev.step);
 
+    // Read the version straight from the app manifest (issue #35) so the
+    // package artifact name can't drift from app.zon the way the old
+    // hard-coded "0.1.0" literal did.
+    const app_version = stringField(@embedFile("app.zon"), ".version") orelse "0.0.0";
     const package = b.addSystemCommand(&.{
         "native",
         "package",
@@ -208,7 +212,7 @@ pub fn build(b: *std.Build) void {
         "--optimize",
         optimize_name,
         "--output",
-        b.fmt("zig-out/package/{s}-0.1.0-{s}-{s}{s}", .{ app_exe_name, @tagName(package_target), optimize_name, packageSuffix(package_target) }),
+        b.fmt("zig-out/package/{s}-{s}-{s}-{s}{s}", .{ app_exe_name, app_version, @tagName(package_target), optimize_name, packageSuffix(package_target) }),
         "--binary",
     });
     package.addFileArg(exe.getEmittedBin());
