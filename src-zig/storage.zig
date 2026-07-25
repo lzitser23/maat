@@ -451,6 +451,14 @@ pub const Storage = struct {
             \\    created_at TEXT NOT NULL,
             \\    updated_at TEXT NOT NULL
             \\);
+            \\
+            \\-- Without this, deleting an asset (the per-asset `DELETE FROM
+            \\-- board_nodes WHERE asset_id = ?` in purgeAssetRowsImpl, and the
+            \\-- unindexed ON DELETE CASCADE from assets) full-scans board_nodes,
+            \\-- making empty-trash on an imported library O(assets x nodes)
+            \\-- (issue #29). IF NOT EXISTS so it also backfills existing DBs on
+            \\-- the next startup.
+            \\CREATE INDEX IF NOT EXISTS idx_board_nodes_asset_id ON board_nodes(asset_id);
         );
 
         try self.migrateBoards();
@@ -1846,6 +1854,13 @@ pub const Storage = struct {
         const now = try self.nowRfc3339(self.allocator);
         defer self.allocator.free(now);
 
+        // One transaction for the whole batch (issue #30): a bare per-row loop
+        // autocommits N times and leaves a partial move behind if a row fails
+        // mid-loop, disagreeing with the caller's undo snapshot. Mirrors the
+        // BEGIN/errdefer ROLLBACK/COMMIT the other batch writers use.
+        try self.execSql("BEGIN");
+        errdefer self.execSql("ROLLBACK") catch {};
+
         for (frames) |frame| {
             const stmt = try self.prepareStmt(
                 "UPDATE frames SET x=?1,y=?2,width=?3,height=?4,label=?5,updated_at=?6 WHERE id=?7 AND library_id=?8",
@@ -1861,6 +1876,8 @@ pub const Storage = struct {
             try bindText(stmt, 8, board_id);
             _ = try stepDone(stmt);
         }
+
+        try self.execSql("COMMIT");
     }
 
     pub fn deleteFrame(self: *Storage, board_id: []const u8, frame_id: []const u8) !void {
@@ -1936,6 +1953,13 @@ pub const Storage = struct {
         const now = try self.nowRfc3339(self.allocator);
         defer self.allocator.free(now);
 
+        // One transaction for the whole batch (issue #30): a bare per-row loop
+        // autocommits N times and leaves a partial move behind if a row fails
+        // mid-loop, disagreeing with the caller's undo snapshot. Mirrors the
+        // BEGIN/errdefer ROLLBACK/COMMIT the other batch writers use.
+        try self.execSql("BEGIN");
+        errdefer self.execSql("ROLLBACK") catch {};
+
         for (nodes) |node| {
             const stmt = try self.prepareStmt(
                 \\UPDATE board_nodes
@@ -1955,6 +1979,8 @@ pub const Storage = struct {
             try bindText(stmt, 10, board_id);
             _ = try stepDone(stmt);
         }
+
+        try self.execSql("COMMIT");
     }
 
     // -- filesystem helpers -----------------------------------------------------
