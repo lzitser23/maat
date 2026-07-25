@@ -1254,22 +1254,49 @@ fn thumbnailFit(w: i32, h: i32) FitSize {
     return .{ .w = @max(out_w, 1), .h = @max(out_h, 1) };
 }
 
+/// Byte sink for `stbi_write_png_to_func` -- collects the encoded PNG in
+/// memory so the actual file write goes through std.Io (see `imageProbe`'s
+/// doc comment for why stb must not touch the filesystem itself).
+const PngSink = struct {
+    allocator: std.mem.Allocator,
+    bytes: std.ArrayList(u8) = .empty,
+    failed: bool = false,
+};
+
+fn pngSinkWrite(context: ?*anyopaque, data: ?*anyopaque, size: c_int) callconv(.c) void {
+    const sink: *PngSink = @ptrCast(@alignCast(context.?));
+    if (sink.failed or size <= 0) return;
+    const bytes_ptr: [*]const u8 = @ptrCast(data.?);
+    sink.bytes.appendSlice(sink.allocator, bytes_ptr[0..@intCast(size)]) catch {
+        sink.failed = true;
+    };
+}
+
 /// Mirrors `image_probe`: decode via stb, resize-to-fit, write PNG. Decode failure
-/// (corrupt file, unsupported format) yields `(null, null, "fallback", null)` without
-/// erroring - the caller still counts the file as imported.
+/// (corrupt file, unsupported format, unreadable file) yields
+/// `(null, null, "fallback", null)` without erroring - the caller still counts the
+/// file as imported.
+///
+/// stb never touches the filesystem here: the source is read and the PNG is
+/// written through std.Io (long-path-safe wide APIs on Windows), and stb only
+/// sees memory. `stbi_load`/`stbi_write_png` go through C `fopen`, which fails
+/// on Windows paths past MAX_PATH (~260 chars) -- a deep storage root silently
+/// lost every thumbnail that way (issue #23).
 fn imageProbe(allocator: std.mem.Allocator, io: std.Io, path_abs: []const u8, thumbs_dir: []const u8, hash: []const u8) !struct {
     width: ?i64,
     height: ?i64,
     previewStatus: []u8,
     thumbnailPath: ?[]u8,
 } {
-    const path_z = try allocator.dupeZ(u8, path_abs);
-    defer allocator.free(path_z);
+    const file_bytes = std.Io.Dir.cwd().readFileAlloc(io, path_abs, allocator, .unlimited) catch {
+        return .{ .width = null, .height = null, .previewStatus = try allocator.dupe(u8, "fallback"), .thumbnailPath = null };
+    };
+    defer allocator.free(file_bytes);
 
     var w: c_int = 0;
     var h: c_int = 0;
     var channels: c_int = 0;
-    const pixels = stb.stbi_load(path_z.ptr, &w, &h, &channels, 4);
+    const pixels = stb.stbi_load_from_memory(file_bytes.ptr, @intCast(file_bytes.len), &w, &h, &channels, 4);
     if (pixels == null) {
         return .{ .width = null, .height = null, .previewStatus = try allocator.dupe(u8, "fallback"), .thumbnailPath = null };
     }
@@ -1301,10 +1328,11 @@ fn imageProbe(allocator: std.mem.Allocator, io: std.Io, path_abs: []const u8, th
         errdefer allocator.free(thumb_path);
 
         if (!existsAbs(io, thumb_path)) {
-            const thumb_path_z = try allocator.dupeZ(u8, thumb_path);
-            defer allocator.free(thumb_path_z);
-            const ok = stb.stbi_write_png(thumb_path_z.ptr, fit.w, fit.h, 4, out_buf.ptr, fit.w * 4);
-            if (ok == 0) return error.ThumbnailWriteFailed;
+            var sink = PngSink{ .allocator = allocator };
+            defer sink.bytes.deinit(allocator);
+            const ok = stb.stbi_write_png_to_func(pngSinkWrite, &sink, fit.w, fit.h, 4, out_buf.ptr, fit.w * 4);
+            if (ok == 0 or sink.failed) return error.ThumbnailWriteFailed;
+            try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = thumb_path, .data = sink.bytes.items });
         }
         thumbnail_path = thumb_path;
     }

@@ -1027,3 +1027,58 @@ test "importPaths reports live progress: total per discovered candidate, complet
     try testing.expectEqual(@as(u64, 3), again.total.load(.monotonic));
     try testing.expectEqual(@as(u64, 3), again.completed.load(.monotonic));
 }
+
+test "thumbnails survive storage roots past Windows MAX_PATH (issue #23)" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try absPath(allocator, tmp.dir, io);
+    defer allocator.free(tmp_root);
+
+    // A minimal valid 1x1 RGB PNG, embedded so the fixture write goes through
+    // std.Io (the stbi_write_png fixture helper would itself trip on long
+    // paths -- exactly the bug under test).
+    const tiny_png = [_]u8{ 137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0, 144, 119, 83, 222, 0, 0, 0, 12, 73, 68, 65, 84, 120, 156, 99, 56, 17, 96, 4, 0, 3, 46, 1, 75, 108, 139, 253, 52, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130 };
+
+    const source_path = try std.fs.path.join(allocator, &.{ tmp_root, "pic.png" });
+    defer allocator.free(source_path);
+    try writeAbsoluteFile(io, source_path, &tiny_png);
+
+    // Pad the storage root out to ~215 chars: managed asset paths append
+    // roughly another 120 (boards/<uuid>/assets/<2>/<64-hex>.png), pushing
+    // them well past the 260-char MAX_PATH limit that C fopen enforces on
+    // Windows, while sqlite's own catalog.db path stays under it. Before the
+    // memory-based stb probe, this import "succeeded" with previewStatus
+    // "fallback" and no thumbnail.
+    var root_builder: std.ArrayList(u8) = .empty;
+    defer root_builder.deinit(allocator);
+    try root_builder.appendSlice(allocator, tmp_root);
+    try root_builder.appendSlice(allocator, "/data");
+    while (root_builder.items.len < 215) {
+        try root_builder.appendSlice(allocator, "/deep-storage-segment");
+    }
+    var store = try Storage.open(allocator, root_builder.items);
+    defer store.close();
+
+    const boards = try store.listBoards(allocator);
+    defer {
+        for (boards) |b| b.deinit(allocator);
+        allocator.free(boards);
+    }
+    const board = boards[0];
+
+    const paths = [_][]const u8{source_path};
+    const report = try ingest.importPaths(allocator, io, &store, board.id, &paths, null);
+    defer report.deinit(allocator);
+    try testing.expectEqual(@as(i64, 1), report.imported);
+
+    const view = try store.loadBoard(allocator, board.id);
+    defer view.deinit(allocator);
+    try testing.expectEqual(@as(usize, 1), view.assets.len);
+    try testing.expect(view.assets[0].managedPath.len > 260);
+    try testing.expectEqualStrings("ready", view.assets[0].previewStatus);
+    try testing.expect(view.assets[0].thumbnailPath != null);
+    try testing.expect(fileExists(io, view.assets[0].thumbnailPath.?));
+}
