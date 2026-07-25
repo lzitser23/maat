@@ -143,16 +143,19 @@ jobs:
       # cross-compiled from Windows.
       - run: zig build test
       - run: pnpm run native:package:macos
-      # No packaged smoke test on macOS (unlike the windows job's
-      # smoke:packaged): that script drives the app over WebView2's CDP
-      # endpoint, which is WebView2-specific -- WKWebView (the macOS system
-      # web engine) doesn't speak CDP, and there is no equivalent
-      # automation hook for it in @native-sdk/cli 0.5.4. `native:package:macos`
-      # (scripts/package-fixup.mjs's verifyMacos) still fails the build if
-      # the packaged .app bundle is incomplete -- missing binary,
-      # Contents/Info.plist, icon, or frontend assets under
-      # Contents/Resources/dist -- so a broken bundle still fails this job,
-      # just without launching it.
+      # Packaged smoke test (issue #31). Unlike the windows job's
+      # smoke:packaged, this can't drive the app over CDP -- WKWebView (the
+      # macOS system web engine) doesn't speak CDP and @native-sdk/cli 0.5.4
+      # ships no equivalent automation hook. Instead it launches the packaged
+      # .app under an isolated $HOME and asserts, via the app's own diagnostic
+      # log (native-sdk.jsonl), the same bar the windows CDP fallback proves:
+      # the app started, completed a native bridge round-trip, and published a
+      # frame -- none of which a blank-shell / boot-crash build can fake. This
+      # complements native:package:macos's verifyMacos (which only checks the
+      # bundle is structurally complete, without ever launching it). Requires
+      # the runner's GUI session so WKWebView can attach; macos-latest provides
+      # one (see the script header for the self-hosted fallback if it stops).
+      - run: pnpm run smoke:packaged:macos
 
       # --- Signing + notarization (push to main / v* tags only) ---
       #
