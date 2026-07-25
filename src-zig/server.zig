@@ -379,6 +379,22 @@ pub const Server = struct {
             return;
         }
         const query = target[query_prefix.len..];
+
+        // Auth (issue #28): the GET /file path is gated by the same
+        // per-process token as POST /upload -- without this, anything that can
+        // reach this loopback port could read any file under the storage root,
+        // including catalog.sqlite3. `<img>`/`<video>` GETs cannot set request
+        // headers, so the token rides in the `t` query param (bridge.ts appends
+        // it to every /file URL it builds) rather than a header.
+        const token = extractQueryParam(query, "t") orelse {
+            writeSimpleResponse(client, 401, "Unauthorized");
+            return;
+        };
+        if (!std.mem.eql(u8, token, &self.upload_token_hex)) {
+            writeSimpleResponse(client, 401, "Unauthorized");
+            return;
+        }
+
         const raw_p = extractQueryParam(query, "p") orelse {
             writeSimpleResponse(client, 404, "Not Found");
             return;
