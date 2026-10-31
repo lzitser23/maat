@@ -9,7 +9,7 @@ import {
   Layers3,
   Palette,
 } from "lucide-react";
-import type { Asset, AssetKind } from "../types";
+import type { AssetKind } from "../types";
 
 export function assetKindLabel(kind: AssetKind) {
   switch (kind) {
@@ -58,20 +58,4 @@ export function assetIcon(kind: AssetKind) {
     default:
       return File;
   }
-}
-
-export function assetAccent(asset: Asset) {
-  const accents: Record<AssetKind, string> = {
-    image: "from-black/10 to-white/0",
-    video: "from-black/10 to-white/0",
-    audio: "from-black/10 to-white/0",
-    pdf: "from-black/10 to-white/0",
-    font: "from-black/10 to-white/0",
-    document: "from-black/10 to-white/0",
-    archive: "from-black/10 to-white/0",
-    design: "from-black/10 to-white/0",
-    model: "from-black/10 to-white/0",
-    unknown: "from-black/10 to-white/0",
-  };
-  return accents[asset.kind] ?? accents.unknown;
 }
